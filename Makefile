@@ -18,7 +18,7 @@ PROGRAMMER_TYPE = jtag2updi
 
 # Programmer port
 # PROGRAMMER_PORT = /dev/ttyACM0
-PROGRAMMER_PORT = /dev/ttyUSB1
+PROGRAMMER_PORT = /dev/ttyUSB0
 
 # AVR-GCC Flags
 CFLAGS = -mmcu=$(MCU) -ffunction-sections -fdata-sections -DF_CPU=$(F_CPU) -Os -MMD -MP -nodevicelib -flto -Wall
