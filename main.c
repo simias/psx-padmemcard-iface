@@ -146,7 +146,7 @@ static void pwm_init(void)
     PORTMUX.TCAROUTEA |= PORTMUX_TCA0_PORTC_gc;
 
     /* Period */
-    TCA0.SINGLE.PER = 0x1FF;
+    TCA0.SINGLE.PER = 0xFF;
 
     /* Duty cycle */
     TCA0.SINGLE.CMP0 = 0x10;
@@ -205,8 +205,8 @@ static void init(void)
     pwm_init();
 }
 
-const uint16_t anim_delay_ms = 33;
-const uint8_t anim_lut[256] = {
+static const uint16_t anim_delay_ms = 20;
+static const uint8_t anim_lut[256] = {
     0x8,  0x8,  0x8,  0x9,  0x9,  0x9,  0x9,  0xa,  0xa,  0xa,  0xb,  0xb,
     0xb,  0xc,  0xc,  0xc,  0xd,  0xd,  0xd,  0xe,  0xe,  0xe,  0xf,  0xf,
     0x10, 0x10, 0x11, 0x11, 0x11, 0x12, 0x13, 0x13, 0x14, 0x14, 0x15, 0x15,
@@ -242,7 +242,7 @@ int main(void)
         printf("loop %u\n", i);
 
         for (luti = 0; luti < ARRAY_SIZE(anim_lut); luti++) {
-            TCA0.SINGLE.CMP0 = anim_lut[luti];
+            TCA0.SINGLE.CMP0BUF = anim_lut[luti];
             _delay_ms(anim_delay_ms);
             wdt_reset();
         }
