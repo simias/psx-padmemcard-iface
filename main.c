@@ -16,26 +16,38 @@ static void spi_init(void)
     /* Set MOSI and CLK pins direction to output */
     PORTA.DIR |= PIN4_bm | PIN6_bm;
 
+    /* Pull Up on MISO */
+    PORTA.PIN5CTRL = PORT_PULLUPEN_bm;
+
+    SPI0.CTRLB = SPI_MODE_3_gc | SPI_SSD_bm;
+
     /* LSB first, CLK_PER / 16 */
     SPI0.CTRLA = SPI_DORD_bm | SPI_ENABLE_bm | SPI_MASTER_bm |
                  SPI_PRESC_DIV16_gc;
-
-    SPI0.CTRLB = SPI_MODE_3_gc | SPI_SSD_bm;
 }
 
-static void spi_wait_bsy(void)
+static uint8_t spi_wait_bsy(void)
 {
     for (;;) {
-        if (SPI0.INTFLAGS & SPI_IF_bm) {
-            break;
+        uint8_t flg = SPI0.INTFLAGS;
+
+        if (flg & SPI_WRCOL_bm) {
+            printf("SPI collision!");
+            return 0xff;
         }
+
+        if (flg & SPI_IF_bm) {
+            return SPI0.DATA;
+        }
+
+        _delay_ms(500);
     }
 }
 
-static void spi_send_sync(uint8_t v)
+static uint8_t spi_exchange(uint8_t v)
 {
     SPI0.DATA = v;
-    spi_wait_bsy();
+    return spi_wait_bsy();
 }
 
 static int uart_putchar(int c)
@@ -92,6 +104,57 @@ static void pwm_init(void)
     PORTC.DIR |= PIN0_bm;
 }
 
+static void rtc_waitbsy(void)
+{
+    while (RTC.STATUS & (RTC_CTRLABUSY_bm | RTC_CNTBUSY_bm | RTC_PERBUSY_bm |
+                         RTC_CMPBUSY_bm)) {
+        ;
+    }
+}
+
+static volatile uint8_t nticks = 0;
+
+ISR(RTC_CNT_vect)
+{
+    uint8_t pwm_cmp;
+
+    /* ACK */
+    RTC.INTFLAGS = RTC_OVF_bm;
+
+    nticks += 1;
+
+    pwm_cmp = TCA0.SINGLE.CMP0BUFL;
+
+    if (pwm_cmp > 10) {
+        pwm_cmp -= 3;
+
+        TCA0.SINGLE.CMP0BUFL = pwm_cmp;
+        TCA0.SINGLE.CMP0BUFH = 0;
+    }
+}
+
+static void rtc_init(void)
+{
+    const unsigned inclk = 32768;
+
+    rtc_waitbsy();
+    /* We want a tic every 10ms */
+    RTC.PER = (inclk + (inclk >> 1)) / 100;
+
+    rtc_waitbsy();
+    RTC.CLKSEL = RTC_CLKSEL_INT32K_gc;
+
+    /* Enable overflow IRQ */
+    rtc_waitbsy();
+    RTC.INTCTRL = RTC_OVF_bm;
+
+    /* Enable RTC with no prescaling */
+    rtc_waitbsy();
+    RTC.CTRLA = RTC_RTCEN_bm | RTC_PRESCALER_DIV1_gc;
+
+    rtc_waitbsy();
+}
+
 static void init(void)
 {
     cli();
@@ -138,6 +201,10 @@ static void init(void)
     pwm_init();
 
     spi_init();
+
+    rtc_init();
+
+    sei();
 }
 
 int main(void)
@@ -146,13 +213,19 @@ int main(void)
     init();
 
     for (i = 0;; i++) {
+        uint8_t v;
+
+        cli();
         TCA0.SINGLE.CMP0BUF = 0x80;
-        printf("loop %u\n", i);
+        sei();
 
-        spi_send_sync(0x85);
+        printf("loop %u %u\n", i, nticks);
 
-        TCA0.SINGLE.CMP0BUF = 0x10;
-        _delay_ms(500);
+        v = spi_exchange(0x85);
+
+        printf("send done, got %x\n", v);
+
+        _delay_ms(1000);
         wdt_reset();
     }
 
