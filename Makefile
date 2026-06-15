@@ -9,7 +9,9 @@ DEP = $(SRC:%.c=%.d)
 MCU = atmega4809
 
 # CPU frequency (per datasheet we can't use more than 10MHz @ 3.5V)
-F_CPU = 8000000L
+#
+# I pick 4MHz so that I can easily divide it by 16 to get a 250MHz SPI clk.
+F_CPU = 4000000L
 # Frequency when divider is left by default
 # F_CPU = 3333333L
 
