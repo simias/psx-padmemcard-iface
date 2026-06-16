@@ -11,12 +11,18 @@
 #define BAUD_RATE 115200UL
 #define USART_BAUD_RATE(_br) ((F_CPU * 4 + (_br) / 2) / (_br))
 
+enum padmem_slot {
+    SLOT_1 = 1,
+    SLOT_2 = 2,
+};
+
 static void spi_init(void)
 {
     /* Set MOSI and CLK pins direction to output */
     PORTA.DIR |= PIN4_bm | PIN6_bm;
 
-    /* Pull Up on MISO */
+    /* Pull Up on MISO (warning: real hardware uses 1kohm, in my tests this
+     * internal PU is not sufficient)*/
     PORTA.PIN5CTRL = PORT_PULLUPEN_bm;
 
     SPI0.CTRLB = SPI_MODE_3_gc | SPI_SSD_bm;
@@ -39,8 +45,6 @@ static uint8_t spi_wait_bsy(void)
         if (flg & SPI_IF_bm) {
             return SPI0.DATA;
         }
-
-        _delay_ms(500);
     }
 }
 
@@ -112,7 +116,7 @@ static void rtc_waitbsy(void)
     }
 }
 
-static volatile uint8_t nticks = 0;
+static volatile uint8_t nticks_10ms = 0;
 
 ISR_N(RTC_CNT_vect_num)
 static void rtc_irq(void)
@@ -122,7 +126,7 @@ static void rtc_irq(void)
     /* ACK */
     RTC.INTFLAGS = RTC_OVF_bm;
 
-    nticks += 1;
+    nticks_10ms++;
 
     pwm_cmp = TCA0.SINGLE.CMP0BUFL;
 
@@ -154,6 +158,29 @@ static void rtc_init(void)
     RTC.CTRLA = RTC_RTCEN_bm | RTC_PRESCALER_DIV1_gc;
 
     rtc_waitbsy();
+}
+
+static volatile uint8_t ndsr = 0;
+
+ISR_N(PORTD_PORT_vect_num)
+static void portd_irq(void)
+{
+    uint8_t flags = PORTD.INTFLAGS;
+
+    /* ACK */
+    PORTD.INTFLAGS = flags;
+
+    if (flags & PORT_INT_0_bm) {
+        TCA0.SINGLE.CMP0BUFL = 0xff;
+        TCA0.SINGLE.CMP0BUFH = 0;
+        ndsr++;
+    }
+}
+
+/* Returns true if DSR is active (that is, /DSR is at 0) */
+static bool dsr(void)
+{
+    return !(PORTD.IN & PIN0_bm);
 }
 
 static void init(void)
@@ -205,7 +232,71 @@ static void init(void)
 
     rtc_init();
 
+    /* /DSR: PD0, IRQ on falling edge, pull up (warning: real hardware uses
+     * 1kohm, in my tests this internal PU is not sufficient) */
+    PORTD.PIN0CTRL = PORT_PULLUPEN_bm | PORT_ISC_FALLING_gc;
+
+    /* /SEL1: PD1, /SEL2: PD2 */
+    PORTD.DIR |= PIN1_bm | PIN2_bm;
+    PORTD.OUTSET |= PIN1_bm | PIN2_bm;
+
+    /* Make sure the peripherals see stable values before we attempt to start a
+     * command */
+    _delay_ms(200);
+
     sei();
+}
+
+static void run_command(enum padmem_slot slot, uint8_t *cmd, uint8_t len)
+{
+    /* Select port */
+    if (slot == SLOT_1) {
+        PORTD.OUTCLR = PIN1_bm;
+    } else {
+        PORTD.OUTCLR = PIN2_bm;
+    }
+    _delay_us(30);
+
+    /* Send the command, waiting for /DSR between each byte */
+    {
+        unsigned i;
+        uint8_t ndsr_pre = ndsr;
+
+        for (i = 0; i < len; i++) {
+            uint8_t tx = cmd[i];
+
+            if (i > 0) {
+                // Wait for DSR
+                uint8_t timeout = nticks_10ms + 2;
+
+                while (nticks_10ms != timeout && ndsr != ndsr_pre) {
+                    ;
+                }
+
+                if (ndsr == ndsr_pre) {
+                    printf("%d: Didn't get a DSR!\n", slot);
+                    goto done;
+                }
+            }
+
+            /* Make sure DSR is inactive before we start */
+            while (dsr()) {
+            }
+
+            _delay_us(4);
+
+            ndsr_pre = ndsr;
+
+            uint8_t rx = spi_exchange(tx);
+
+            printf("%d: Sent %x got %x\n", slot, tx, rx);
+        }
+    }
+
+done:
+    /* Deselect everything */
+    PORTD.OUTSET |= PIN1_bm | PIN2_bm;
+    _delay_us(20);
 }
 
 int main(void)
@@ -214,17 +305,18 @@ int main(void)
     init();
 
     for (i = 0;; i++) {
-        uint8_t v;
+        uint8_t pad_read[] = {
+            0x01, 0x42, 0x00, 0x00, 0x00,
+        };
 
         cli();
-        TCA0.SINGLE.CMP0BUF = 0x80;
+        TCA0.SINGLE.CMP0BUF = 0x40;
         sei();
 
-        printf("loop %u %u\n", i, nticks);
+        printf("loop %u %u %u [%x]\n", i, nticks_10ms, ndsr, PORTD.IN);
 
-        v = spi_exchange(0x85);
-
-        printf("send done, got %x\n", v);
+        run_command(SLOT_1, pad_read, ARRAY_SIZE(pad_read));
+        run_command(SLOT_2, pad_read, ARRAY_SIZE(pad_read));
 
         _delay_ms(1000);
         wdt_reset();
