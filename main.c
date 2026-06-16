@@ -77,13 +77,51 @@ static int uart_putchar_stream(char c, FILE *stream)
 static FILE uart_stream =
     FDEV_SETUP_STREAM(uart_putchar_stream, NULL, _FDEV_SETUP_WRITE);
 
+enum uart_rx_state {
+    WAIT_FOR_0A,
+    WAIT_FOR_A5,
+    WAIT_FOR_CMD,
+};
+
+static volatile enum uart_rx_state uart_st = WAIT_FOR_0A;
+
+ISR_N(USART2_RXC_vect_num)
+static void uart_rx_irq(void)
+{
+    uint8_t b = USART2.RXDATAL;
+    enum uart_rx_state nstate = WAIT_FOR_0A;
+
+    switch (uart_st) {
+    case WAIT_FOR_0A:
+        if (b == 0x0a) {
+            nstate = WAIT_FOR_A5;
+        }
+        break;
+    case WAIT_FOR_A5:
+        if (b == 0xA5) {
+            nstate = WAIT_FOR_CMD;
+        } else {
+            nstate = WAIT_FOR_0A;
+        }
+        break;
+    case WAIT_FOR_CMD:
+        nstate = WAIT_FOR_0A;
+    }
+
+    uart_st = nstate;
+}
+
 static void uart_init(void)
 {
-    USART2.BAUD = USART_BAUD_RATE(BAUD_RATE);
-    USART2.CTRLB = USART_TXEN_bm;
+    /* Add pull-up on RX pin for when nothing is connected */
+    PORTF.PIN1CTRL = PORT_PULLUPEN_bm;
 
     /* PIN F1 TX*/
     PORTF.DIR |= PIN0_bm;
+
+    USART2.BAUD = USART_BAUD_RATE(BAUD_RATE);
+    USART2.CTRLA = USART_RXCIE_bm;
+    USART2.CTRLB = USART_TXEN_bm | USART_RXEN_bm;
 
     stdout = &uart_stream;
 }
@@ -313,7 +351,8 @@ int main(void)
         TCA0.SINGLE.CMP0BUF = 0x40;
         sei();
 
-        printf("loop %u %u %u [%x]\n", i, nticks_10ms, ndsr, PORTD.IN);
+        printf("loop %u %u %u [%x] |%c|\n", i, nticks_10ms, ndsr, PORTD.IN,
+               USART2.RXDATAL);
 
         run_command(SLOT_1, pad_read, ARRAY_SIZE(pad_read));
         run_command(SLOT_2, pad_read, ARRAY_SIZE(pad_read));
