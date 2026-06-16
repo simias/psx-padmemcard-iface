@@ -114,7 +114,8 @@ static void rtc_waitbsy(void)
 
 static volatile uint8_t nticks = 0;
 
-ISR(RTC_CNT_vect)
+ISR_N(RTC_CNT_vect_num)
+static void rtc_irq(void)
 {
     uint8_t pwm_cmp;
 

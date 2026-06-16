@@ -23,9 +23,9 @@ PROGRAMMER_TYPE = jtag2updi
 PROGRAMMER_PORT = /dev/ttyUSB0
 
 # AVR-GCC Flags
-CFLAGS = -mmcu=$(MCU) -ffunction-sections -fdata-sections -DF_CPU=$(F_CPU) -Os -MMD -MP -nodevicelib -flto -Wall
+CFLAGS = -mmcu=$(MCU) -ffunction-sections -fdata-sections -DF_CPU=$(F_CPU) -Os -MMD -MP -flto -Wall
 
-PREFIX = /opt/avr8-gnu-toolchain-linux_x86_64/bin/
+# PREFIX = /opt/avr8-gnu-toolchain-linux_x86_64/bin/
 
 # Compilation command
 CC = $(PREFIX)avr-gcc
