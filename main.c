@@ -78,34 +78,40 @@ static FILE uart_stream =
     FDEV_SETUP_STREAM(uart_putchar_stream, NULL, _FDEV_SETUP_WRITE);
 
 enum uart_rx_state {
-    WAIT_FOR_0A,
+    WAIT_FOR_0D,
     WAIT_FOR_A5,
     WAIT_FOR_CMD,
 };
 
-static volatile enum uart_rx_state uart_st = WAIT_FOR_0A;
+static volatile enum uart_rx_state uart_st = WAIT_FOR_0D;
 
 ISR_N(USART2_RXC_vect_num)
 static void uart_rx_irq(void)
 {
     uint8_t b = USART2.RXDATAL;
-    enum uart_rx_state nstate = WAIT_FOR_0A;
+    enum uart_rx_state nstate = WAIT_FOR_0D;
 
     switch (uart_st) {
-    case WAIT_FOR_0A:
-        if (b == 0x0a) {
+    case WAIT_FOR_0D:
+        if (b == 0x0d) {
             nstate = WAIT_FOR_A5;
         }
         break;
     case WAIT_FOR_A5:
         if (b == 0xA5) {
             nstate = WAIT_FOR_CMD;
+        } else if (b == 0x0d) {
+            nstate = WAIT_FOR_A5;
         } else {
-            nstate = WAIT_FOR_0A;
+            nstate = WAIT_FOR_0D;
         }
         break;
     case WAIT_FOR_CMD:
-        nstate = WAIT_FOR_0A;
+        nstate = WAIT_FOR_0D;
+    }
+
+    if (nstate != WAIT_FOR_0D) {
+        TCA0.SINGLE.CMP0BUF = 0x30;
     }
 
     uart_st = nstate;
@@ -129,6 +135,8 @@ static void uart_init(void)
 static void pwm_init(void)
 {
     /* LED on PC0: use PWM */
+    PORTC.DIR |= PIN0_bm;
+
     PORTMUX.TCAROUTEA &= ~PORTMUX_TCA0_gm;
     PORTMUX.TCAROUTEA |= PORTMUX_TCA0_PORTC_gc;
 
@@ -138,12 +146,10 @@ static void pwm_init(void)
     /* Duty cycle */
     TCA0.SINGLE.CMP0 = 0x10;
 
-    /* Set divider */
-    TCA0.SINGLE.CTRLA = TCA_SINGLE_CLKSEL_DIV2_gc | TCA_SINGLE_ENABLE_bm;
-
     TCA0.SINGLE.CTRLB = TCA_SINGLE_CMP0EN_bm | TCA_SINGLE_WGMODE_SINGLESLOPE_gc;
 
-    PORTC.DIR |= PIN0_bm;
+    /* Set divider */
+    TCA0.SINGLE.CTRLA = TCA_SINGLE_CLKSEL_DIV2_gc | TCA_SINGLE_ENABLE_bm;
 }
 
 static void rtc_waitbsy(void)
@@ -180,8 +186,8 @@ static void rtc_init(void)
 {
     const unsigned inclk = 32768;
 
-    rtc_waitbsy();
     /* We want a tic every 10ms */
+    rtc_waitbsy();
     RTC.PER = (inclk + (inclk >> 1)) / 100;
 
     rtc_waitbsy();
@@ -319,6 +325,7 @@ static void run_command(enum padmem_slot slot, uint8_t *cmd, uint8_t len)
 
             /* Make sure DSR is inactive before we start */
             while (dsr()) {
+                ;
             }
 
             _delay_us(4);
@@ -330,6 +337,7 @@ static void run_command(enum padmem_slot slot, uint8_t *cmd, uint8_t len)
             printf("%d: Sent %x got %x\n", slot, tx, rx);
         }
     }
+    set_sleep_mode(SLEEP_MODE_PWR_DOWN);
 
 done:
     /* Deselect everything */
@@ -339,26 +347,35 @@ done:
 
 int main(void)
 {
-    unsigned i;
     init();
 
-    for (i = 0;; i++) {
-        uint8_t pad_read[] = {
-            0x01, 0x42, 0x00, 0x00, 0x00,
-        };
+    set_sleep_mode(SLEEP_MODE_IDLE);
+    sleep_enable();
 
+    for (;;) {
         cli();
-        TCA0.SINGLE.CMP0BUF = 0x40;
+        if (uart_st != WAIT_FOR_CMD) {
+            /* This may look race-y but it isn't: the instruction immediately
+             * after SEI is guaranteed to be executed before any IRQ is handled.
+             * So it's not possible for an IRQ to sneak in-between.
+             */
+            sei();
+            sleep_cpu();
+            sleep_disable();
+            continue;
+        }
         sei();
 
-        printf("loop %u %u %u [%x] |%c|\n", i, nticks_10ms, ndsr, PORTD.IN,
-               USART2.RXDATAL);
+        {
+            uint8_t pad_read[] = {
+                0x01, 0x42, 0x00, 0x00, 0x00,
+            };
 
-        run_command(SLOT_1, pad_read, ARRAY_SIZE(pad_read));
-        run_command(SLOT_2, pad_read, ARRAY_SIZE(pad_read));
+            puts("Handle CMD!");
 
-        _delay_ms(1000);
-        wdt_reset();
+            run_command(SLOT_1, pad_read, ARRAY_SIZE(pad_read));
+            run_command(SLOT_2, pad_read, ARRAY_SIZE(pad_read));
+        }
     }
 
     return 0;
