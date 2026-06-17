@@ -524,7 +524,7 @@
     "last_paths": {
       "idf": "",
       "netlist": "",
-      "plot": "",
+      "plot": "/tmp/",
       "specctra_dsn": "",
       "vrml": ""
     },
@@ -636,6 +636,14 @@
     "meta": {
       "version": 1
     },
+    "ngspice": {
+      "fix_include_paths": true,
+      "meta": {
+        "version": 0
+      },
+      "model_mode": 4,
+      "workbook_filename": ""
+    },
     "page_layout_descr_file": "",
     "plot_directory": "",
     "reuse_designators": true,
@@ -648,7 +656,7 @@
         "uuid": "462a6b48-c00d-4b04-9739-f451a5bd4853"
       }
     ],
-    "used_designators": "#FLG2",
+    "used_designators": "L1",
     "variants": []
   },
   "sheets": [
