@@ -23,7 +23,7 @@ PROGRAMMER_TYPE = jtag2updi
 PROGRAMMER_PORT = /dev/ttyUSB0
 
 # AVR-GCC Flags
-CFLAGS = -mmcu=$(MCU) -ffunction-sections -fdata-sections -DF_CPU=$(F_CPU) -Os -MMD -MP -flto -Wall
+CFLAGS = -mmcu=$(MCU) -ffunction-sections -fdata-sections -DF_CPU=$(F_CPU) -Os -MMD -MP -flto -Wall -Wextra
 
 # PREFIX = /opt/avr8-gnu-toolchain-linux_x86_64/bin/
 
@@ -66,7 +66,13 @@ clean:
 	$(info CLEAN $(NAME))
 	rm -f $(NAME).elf $(NAME).hex $(OBJ) $(DEP)
 
-.PHONY: all flash clean
+fmt:
+	$(info FORMAT $(NAME))
+	black padmem.py
+	clang-format -i $(SRC)
+
+
+.PHONY: all flash clean fmt
 
 # Be verbose if V is set
 $V.SILENT:

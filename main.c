@@ -8,7 +8,7 @@
 
 #define ARRAY_SIZE(_arr) (sizeof(_arr) / sizeof((_arr)[0]))
 
-#define BAUD_RATE 115200UL
+#define BAUD_RATE 115200
 #define USART_BAUD_RATE(_br) ((F_CPU * 4 + (_br) / 2) / (_br))
 
 enum padmem_slot {
@@ -67,6 +67,8 @@ static int uart_putchar(int c)
 
 static int uart_putchar_stream(char c, FILE *stream)
 {
+    (void)stream;
+
     if (c == '\n') {
         uart_putchar('\r');
     }
@@ -78,43 +80,91 @@ static FILE uart_stream =
     FDEV_SETUP_STREAM(uart_putchar_stream, NULL, _FDEV_SETUP_WRITE);
 
 enum uart_rx_state {
-    WAIT_FOR_0D,
-    WAIT_FOR_A5,
-    WAIT_FOR_CMD,
+    RX_START,
+    WAIT_FOR_LEN,
+    WAIT_FOR_DATA,
+    WAIT_FOR_CSUM,
+    RX_DONE,
 };
 
-static volatile enum uart_rx_state uart_st = WAIT_FOR_0D;
+static volatile enum uart_rx_state uart_st = RX_START;
+
+static volatile uint8_t rx_buf[256];
+static volatile uint8_t rx_buf_last;
 
 ISR_N(USART2_RXC_vect_num)
 static void uart_rx_irq(void)
 {
     uint8_t b = USART2.RXDATAL;
-    enum uart_rx_state nstate = WAIT_FOR_0D;
+    enum uart_rx_state nstate = RX_START;
+    /* How many bytes to receive - 1*/
+    static uint8_t csum;
+    static uint8_t rx_index;
 
     switch (uart_st) {
-    case WAIT_FOR_0D:
-        if (b == 0x0d) {
-            nstate = WAIT_FOR_A5;
-        }
-        break;
-    case WAIT_FOR_A5:
+    case RX_START:
         if (b == 0xA5) {
-            nstate = WAIT_FOR_CMD;
-        } else if (b == 0x0d) {
-            nstate = WAIT_FOR_A5;
-        } else {
-            nstate = WAIT_FOR_0D;
+            nstate = WAIT_FOR_LEN;
         }
         break;
-    case WAIT_FOR_CMD:
-        nstate = WAIT_FOR_0D;
+    case WAIT_FOR_LEN:
+        rx_index = (uint8_t)-1;
+        rx_buf_last = b;
+        csum = 0;
+
+        nstate = WAIT_FOR_DATA;
+
+        break;
+    case WAIT_FOR_DATA:
+        rx_buf[++rx_index] = b;
+        csum += b;
+
+        if (rx_index == rx_buf_last) {
+            csum ^= 0xff;
+            nstate = WAIT_FOR_CSUM;
+        } else {
+            nstate = WAIT_FOR_DATA;
+        }
+        break;
+    case WAIT_FOR_CSUM:
+        if (csum == b) {
+            nstate = RX_DONE;
+        } else {
+            printf("Invalid CSUM! expected %x got %x", csum, b);
+        }
+        break;
+    case RX_DONE:
+        nstate = RX_DONE;
+        break;
     }
 
-    if (nstate != WAIT_FOR_0D) {
-        TCA0.SINGLE.CMP0BUF = 0x30;
+    if (nstate != RX_START && nstate != RX_DONE) {
+        TCA0.SINGLE.CMP0BUF = 0x20;
     }
 
     uart_st = nstate;
+}
+
+static void uart_tx_frame(uint8_t cmd, const uint8_t *dat, uint8_t len)
+{
+    uint8_t csum = cmd;
+    uint8_t i;
+
+    uart_putchar(0xA6);
+    uart_putchar(len);
+    uart_putchar(cmd);
+
+    for (i = 0; i < len; i++) {
+        csum += dat[i];
+        uart_putchar(dat[i]);
+    }
+
+    uart_putchar(csum ^ 0xff);
+}
+
+static void uart_tx_nack(void)
+{
+    uart_tx_frame('!', NULL, 0);
 }
 
 static void uart_init(void)
@@ -291,8 +341,14 @@ static void init(void)
     sei();
 }
 
-static void run_command(enum padmem_slot slot, uint8_t *cmd, uint8_t len)
+static uint8_t command_rx_buf[256];
+
+static uint8_t run_command(enum padmem_slot slot, volatile const uint8_t *cmd,
+                           uint8_t len)
 {
+    uint8_t ndsr_pre = ndsr;
+    unsigned i;
+
     /* Select port */
     if (slot == SLOT_1) {
         PORTD.OUTCLR = PIN1_bm;
@@ -302,47 +358,40 @@ static void run_command(enum padmem_slot slot, uint8_t *cmd, uint8_t len)
     _delay_us(30);
 
     /* Send the command, waiting for /DSR between each byte */
-    {
-        unsigned i;
-        uint8_t ndsr_pre = ndsr;
+    for (i = 0; i < len; i++) {
+        uint8_t tx = cmd[i];
 
-        for (i = 0; i < len; i++) {
-            uint8_t tx = cmd[i];
+        if (i > 0) {
+            // Wait for DSR
+            uint8_t timeout = nticks_10ms + 20;
 
-            if (i > 0) {
-                // Wait for DSR
-                uint8_t timeout = nticks_10ms + 2;
-
-                while (nticks_10ms != timeout && ndsr != ndsr_pre) {
-                    ;
-                }
-
-                if (ndsr == ndsr_pre) {
-                    printf("%d: Didn't get a DSR!\n", slot);
-                    goto done;
-                }
-            }
-
-            /* Make sure DSR is inactive before we start */
-            while (dsr()) {
+            while (nticks_10ms != timeout && ndsr != ndsr_pre) {
                 ;
             }
 
-            _delay_us(4);
-
-            ndsr_pre = ndsr;
-
-            uint8_t rx = spi_exchange(tx);
-
-            printf("%d: Sent %x got %x\n", slot, tx, rx);
+            if (ndsr == ndsr_pre) {
+                goto done;
+            }
         }
+
+        /* Make sure DSR is inactive before we start */
+        while (dsr()) {
+            ;
+        }
+
+        _delay_us(4);
+
+        ndsr_pre = ndsr;
+
+        command_rx_buf[i] = spi_exchange(tx);
     }
-    set_sleep_mode(SLEEP_MODE_PWR_DOWN);
 
 done:
     /* Deselect everything */
     PORTD.OUTSET |= PIN1_bm | PIN2_bm;
     _delay_us(20);
+
+    return i;
 }
 
 int main(void)
@@ -354,29 +403,55 @@ int main(void)
 
     for (;;) {
         cli();
-        if (uart_st != WAIT_FOR_CMD) {
+        if (uart_st != RX_DONE) {
             /* This may look race-y but it isn't: the instruction immediately
              * after SEI is guaranteed to be executed before any IRQ is handled.
              * So it's not possible for an IRQ to sneak in-between.
              */
             sei();
             sleep_cpu();
-            sleep_disable();
             continue;
         }
         sei();
 
-        {
-            uint8_t pad_read[] = {
-                0x01, 0x42, 0x00, 0x00, 0x00,
-            };
+        switch (rx_buf[0]) {
+        case '?':
+            /* Query interface version */
+            {
+                uint8_t version[] = { 1, 0, 0 };
 
-            puts("Handle CMD!");
+                uart_tx_frame('?', version, ARRAY_SIZE(version));
+            }
+            break;
+        case 'X':
+            /* Send a transaction to the slot provided and return the response.
+             * The transfer will stop early if we don't receive a DSR
+             */
+            {
+                uint8_t slot;
+                uint8_t nx;
 
-            run_command(SLOT_1, pad_read, ARRAY_SIZE(pad_read));
-            run_command(SLOT_2, pad_read, ARRAY_SIZE(pad_read));
+                if (rx_buf_last < 2) {
+                    uart_tx_nack();
+                }
+
+                slot = rx_buf[1];
+
+                if (slot != SLOT_1 && slot != SLOT_2) {
+                    printf("Bad slot %d\n", slot);
+                    uart_tx_nack();
+                }
+
+                nx = run_command(slot, rx_buf + 2, rx_buf_last - 1);
+                uart_tx_frame('X', command_rx_buf, nx);
+            }
+            break;
+        default:
+            printf("Unknown command %x\n", rx_buf[0]);
+            uart_tx_nack();
         }
-    }
 
-    return 0;
+        /* We're ready to accept the next command */
+        uart_st = RX_START;
+    }
 }
