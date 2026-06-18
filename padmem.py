@@ -7,14 +7,12 @@ from time import sleep
 from enum import Enum, auto
 
 
+class Slot(Enum):
+    SLOT_1 = 1
+    SLOT_2 = 2
+
+
 class Iface:
-    class RxState(Enum):
-        RX_START = auto()
-        WAIT_FOR_A5 = auto()
-        WAIT_FOR_LEN = auto()
-        WAIT_FOR_DATA = auto()
-        WAIT_FOR_CSUM = auto()
-        RX_DONE = auto()
 
     def __init__(self, uart_path):
         self.uart = serial.Serial(
@@ -93,22 +91,53 @@ class Iface:
             if res[0 : len(expected_cmd)] != expected_cmd:
                 raise Exception(f"Unexpected frame, wanted {expected_cmd} got {res}")
 
+            return res[len(expected_cmd) :]
+
         return res
+
+    def exchange_with_slot(self, slot, bytes):
+        cmd = bytearray(b"X")
+        cmd.append(slot.value)
+        cmd += bytes
+
+        return self.send_frame(cmd)
+
+
+def do_list(iface, args):
+    for s in Slot:
+        iface.exchange_with_slot(s, b"\x01\x42\x00\x00\x00")
+        r = iface.receive_frame(b"X")
+        if len(r) == 5 and r[1] == 0x41 and r[2] == 0x5A:
+            print(f"Slot {s.value}: GamePad detected")
+        else:
+            print(f"Slot {s.value}: No GamePad")
+
+        iface.exchange_with_slot(s, b"\x81\x52\x00\x00")
+        r = iface.receive_frame(b"X")
+        if len(r) == 4 and r[2] == 0x5A and r[3] == 0x5D:
+            print(f"Slot {s.value}: Memory Card detected")
+        else:
+            print(f"Slot {s.value}: No Memory Card")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PlayStation Pad/MemoryCard interface")
 
-    parser.add_argument("command")
     parser.add_argument(
         "-u",
         "--uart",
         default="/dev/ttyUSB0",
         help="TTY connected to the interface module",
     )
+    subparsers = parser.add_subparsers(required=True)
+    parser_list = subparsers.add_parser("list", help="List all connected devices")
+    parser_list.set_defaults(cback=do_list)
+
     args = parser.parse_args()
 
     iface = Iface(args.uart)
+
+    args.cback(iface, args)
 
     try:
         iface.send_frame(b"?")
@@ -116,7 +145,3 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Couldn't communicate with interface: {e}")
         sys.exit(1)
-
-    iface.send_frame(b"X\x01\x01\x42\x03\x03\x03")
-    f = iface.receive_frame(b"X")
-    print(f)
