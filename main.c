@@ -186,6 +186,7 @@ static void pwm_init(void)
 {
     /* LED on PC0: use PWM */
     PORTC.DIR |= PIN0_bm;
+    PORTC.DIR |= PIN1_bm;
 
     PORTMUX.TCAROUTEA &= ~PORTMUX_TCA0_gm;
     PORTMUX.TCAROUTEA |= PORTMUX_TCA0_PORTC_gc;
@@ -234,11 +235,9 @@ static void rtc_irq(void)
 
 static void rtc_init(void)
 {
-    const unsigned inclk = 32768;
-
     /* We want a tic every 10ms */
     rtc_waitbsy();
-    RTC.PER = (inclk + (inclk >> 1)) / 100;
+    RTC.PER = (32768 + (100 >> 1)) / 100;
 
     rtc_waitbsy();
     RTC.CLKSEL = RTC_CLKSEL_INT32K_gc;
@@ -265,6 +264,7 @@ static void portd_irq(void)
     PORTD.INTFLAGS = flags;
 
     if (flags & PORT_INT_0_bm) {
+        PORTC.OUTTGL |= PIN1_bm;
         TCA0.SINGLE.CMP0BUFL = 0xff;
         TCA0.SINGLE.CMP0BUFH = 0;
         ndsr++;
@@ -308,12 +308,13 @@ static void init(void)
     PORTC.PIN7CTRL &= ~PORT_ISC_gm;
     PORTC.PIN7CTRL |= PORT_ISC_INPUT_DISABLE_gc;
 
-    /* Enable prescaler with PDIV = 0 (DIV 2). With fuse2/osccfg set to 0x01
-     * that will give us a 8MHz CPU clock.
+    /* Enable prescaler with PDIV = (DIV 4). With fuse2/osccfg set to 0x01
+     * that will give us a 4MHz CPU clock.
      *
      * According to the datasheet, with our 3V5 power supply the chip cannot
      * safely run at 16MHz but we could run at 10MHz if we wanted and stay
-     * within the safe range.
+     * within the safe range. But then we have to take into account that we want
+     * the SPI to run at 250kHz...
      */
     _PROTECTED_WRITE(CLKCTRL_MCLKCTRLB, CLKCTRL_PEN_bm | CLKCTRL_PDIV_4X_gc);
 
@@ -328,7 +329,7 @@ static void init(void)
 
     /* /DSR: PD0, IRQ on falling edge, pull up (warning: real hardware uses
      * 1kohm, in my tests this internal PU is not sufficient) */
-    PORTD.PIN0CTRL = PORT_PULLUPEN_bm | PORT_ISC_FALLING_gc;
+    PORTD.PIN0CTRL = PORT_ISC_FALLING_gc;
 
     /* /SEL1: PD1, /SEL2: PD2 */
     PORTD.DIR |= PIN1_bm | PIN2_bm;
@@ -365,7 +366,7 @@ static uint8_t run_command(enum padmem_slot slot, volatile const uint8_t *cmd,
             // Wait for DSR
             uint8_t timeout = nticks_10ms + 20;
 
-            while (nticks_10ms != timeout && ndsr != ndsr_pre) {
+            while (nticks_10ms != timeout && ndsr == ndsr_pre) {
                 ;
             }
 
