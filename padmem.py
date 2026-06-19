@@ -233,13 +233,12 @@ def do_exchange(iface, args):
     slot = Slot(args.slot)
     tx = bytearray(args.rest)
 
-    print("Sending:")
-    printbytes(tx)
+    v = iface.verbose
+    iface.verbose = True
 
-    r = iface.exchange_with_slot(slot, tx)
+    iface.exchange_with_slot(slot, tx)
 
-    print("Got:")
-    printbytes(r)
+    iface.verbose = v
 
 
 if __name__ == "__main__":
