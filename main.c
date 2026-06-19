@@ -21,7 +21,7 @@ static void spi_init(void)
     /* Set MOSI and CLK pins direction to output */
     PORTA.DIR |= PIN4_bm | PIN6_bm;
 
-    /* Pull Up on MISO (warning: real hardware uses 1kohm, in my tests this
+    /* Pull Up on MISO (warning: needs external 1kohm pull-up, in my tests this
      * internal PU is not sufficient)*/
     PORTA.PIN5CTRL = PORT_PULLUPEN_bm;
 
@@ -81,8 +81,8 @@ static FILE uart_stream =
 
 enum uart_rx_state {
     RX_START,
-    WAIT_FOR_LEN,
     WAIT_FOR_DATA,
+    WAIT_FOR_ESCAPE,
     WAIT_FOR_CSUM,
     RX_DONE,
 };
@@ -90,7 +90,7 @@ enum uart_rx_state {
 static volatile enum uart_rx_state uart_st = RX_START;
 
 static volatile uint8_t rx_buf[256];
-static volatile uint8_t rx_buf_last;
+static volatile uint8_t rx_buf_end;
 
 ISR_N(USART2_RXC_vect_num)
 static void uart_rx_irq(void)
@@ -99,42 +99,57 @@ static void uart_rx_irq(void)
     enum uart_rx_state nstate = RX_START;
     /* How many bytes to receive - 1*/
     static uint8_t csum;
-    static uint8_t rx_index;
 
     switch (uart_st) {
     case RX_START:
         if (b == 0xA5) {
-            nstate = WAIT_FOR_LEN;
-        }
-        break;
-    case WAIT_FOR_LEN:
-        rx_index = (uint8_t)-1;
-        rx_buf_last = b;
-        csum = 0;
-
-        nstate = WAIT_FOR_DATA;
-
-        break;
-    case WAIT_FOR_DATA:
-        rx_buf[++rx_index] = b;
-        csum += b;
-
-        if (rx_index == rx_buf_last) {
-            csum ^= 0xff;
-            nstate = WAIT_FOR_CSUM;
-        } else {
+            rx_buf_end = 0;
+            csum = 0;
             nstate = WAIT_FOR_DATA;
         }
         break;
+    case WAIT_FOR_DATA:
+
+        if (b == 0xa7) {
+            nstate = WAIT_FOR_ESCAPE;
+        } else {
+            /* Let this wrap around on overflow, it'll just be rejected by the
+             * checksum, probably */
+            rx_buf[rx_buf_end++] = b;
+            csum += b;
+            nstate = WAIT_FOR_DATA;
+        }
+
+        break;
+    case WAIT_FOR_ESCAPE:
+        if (b == 0xa7) {
+            /* 0xa7 0xa7 -> we want an 0xa7 */
+            rx_buf[rx_buf_end++] = b;
+            csum += b;
+            nstate = WAIT_FOR_DATA;
+        } else if (b == (rx_buf_end & 0x7f)) {
+            /* End of data */
+            nstate = WAIT_FOR_CSUM;
+        } else {
+            /* Spurious/corrupted data */
+            nstate = RX_START;
+        }
+
+        break;
+
     case WAIT_FOR_CSUM:
-        if (csum == b) {
+        if ((csum ^ 0xff) == b) {
             nstate = RX_DONE;
         } else {
-            printf("Invalid CSUM! expected %x got %x", csum, b);
+            printf("Invalid CSUM! expected %x got %x\n", csum, b);
         }
         break;
     case RX_DONE:
-        nstate = RX_DONE;
+        if (rx_buf_end > 0) {
+            nstate = RX_DONE;
+        } else {
+            nstate = RX_START;
+        }
         break;
     }
 
@@ -150,15 +165,21 @@ static void uart_tx_frame(uint8_t cmd, const uint8_t *dat, uint8_t len)
     uint8_t csum = cmd;
     uint8_t i;
 
-    uart_putchar(0xA6);
-    uart_putchar(len);
+    uart_putchar(0xa6);
     uart_putchar(cmd);
 
     for (i = 0; i < len; i++) {
-        csum += dat[i];
-        uart_putchar(dat[i]);
+        uint8_t b = dat[i];
+        csum += b;
+        uart_putchar(b);
+        if (b == 0xa7) {
+            /* Escape */
+            uart_putchar(b);
+        }
     }
 
+    uart_putchar(0xa7);
+    uart_putchar((len + 1) & 0x7f);
     uart_putchar(csum ^ 0xff);
 }
 
@@ -285,12 +306,12 @@ static void init(void)
     /* wdt_enable(WDTO_2S); */
 
     /* Per datasheet:
-   *
-   * The 40-pin version of the ATmega4809 is using the die of the 48-pin
-   * ATmega4809 but offers fewer connected pads. For this reason, the pins
-   * PB[5:0] and PC[7:6] must be disabled (INPUT_DISABLE) or enable pull-ups
-   * (PULLUPEN).
-   */
+     *
+     * The 40-pin version of the ATmega4809 is using the die of the 48-pin
+     * ATmega4809 but offers fewer connected pads. For this reason, the pins
+     * PB[5:0] and PC[7:6] must be disabled (INPUT_DISABLE) or enable pull-ups
+     * (PULLUPEN).
+     */
     PORTB.PIN0CTRL &= ~PORT_ISC_gm;
     PORTB.PIN0CTRL |= PORT_ISC_INPUT_DISABLE_gc;
     PORTB.PIN1CTRL &= ~PORT_ISC_gm;
@@ -327,8 +348,8 @@ static void init(void)
 
     rtc_init();
 
-    /* /DSR: PD0, IRQ on falling edge, pull up (warning: real hardware uses
-     * 1kohm, in my tests this internal PU is not sufficient) */
+    /* /DSR: PD0, IRQ on falling edge, (warning: needs external 1kohm pull-up,
+     * in my tests this internal PU is not sufficient) */
     PORTD.PIN0CTRL = PORT_ISC_FALLING_gc;
 
     /* /SEL1: PD1, /SEL2: PD2 */
@@ -371,6 +392,7 @@ static uint8_t run_command(enum padmem_slot slot, volatile const uint8_t *cmd,
             }
 
             if (ndsr == ndsr_pre) {
+                /* Timeout while waiting for DSR */
                 goto done;
             }
         }
@@ -432,7 +454,7 @@ int main(void)
                 uint8_t slot;
                 uint8_t nx;
 
-                if (rx_buf_last < 2) {
+                if (rx_buf_end < 2) {
                     uart_tx_nack();
                 }
 
@@ -443,7 +465,7 @@ int main(void)
                     uart_tx_nack();
                 }
 
-                nx = run_command(slot, rx_buf + 2, rx_buf_last - 1);
+                nx = run_command(slot, rx_buf + 2, rx_buf_end - 2);
                 uart_tx_frame('X', command_rx_buf, nx);
             }
             break;

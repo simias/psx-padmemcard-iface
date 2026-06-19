@@ -23,7 +23,7 @@ class Iface:
             bytesize=serial.EIGHTBITS,
             parity=serial.PARITY_NONE,
             stopbits=serial.STOPBITS_ONE,
-            timeout=5,
+            timeout=2,
         )
 
         # Flush any partial command that could be in progress
@@ -38,13 +38,23 @@ class Iface:
         if len(bytes) == 0:
             raise ValueError("Frame is empty!")
 
-        if len(bytes) > 256:
-            raise ValueError(f"Frame length {len(bytes)} is greater than 256")
+        if len(bytes) > 255:
+            raise ValueError(f"Frame length {len(bytes)} is greater than 255")
+
+        csum = 0
 
         frame = bytearray(b"\xa5")
-        frame.append(len(bytes) - 1)
-        frame += bytes
-        frame.append((sum(bytes) & 0xFF) ^ 0xFF)
+        for b in bytes:
+            csum += b
+            frame.append(b)
+            if b == 0xA7:
+                # Escape
+                frame.append(b)
+
+        # End marker
+        frame.append(0xA7)
+        frame.append(len(bytes) & 0x7F)
+        frame.append((csum & 0xFF) ^ 0xFF)
 
         self.uart.write(frame)
         self.uart.flush()
@@ -74,15 +84,21 @@ class Iface:
         if extra:
             print(f"Off-band RX data: {extra}")
 
-        rxlen = self.read_or_die() + 1
-
         expected_csum = 0
 
         res = bytearray()
-        for _ in range(0, rxlen):
+        while True:
             b = self.read_or_die()
+            if b == 0xA7:
+                b = self.read_or_die()
+                if b != 0xA7:
+                    break
+
             expected_csum += b
             res.append(b)
+
+        if b != len(res) & 0x7F:
+            raise Exception(f"Invalid end marker")
 
         expected_csum = (expected_csum & 0xFF) ^ 0xFF
 
