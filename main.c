@@ -226,7 +226,7 @@ static void rtc_irq(void)
     pwm_cmp = TCA0.SINGLE.CMP0BUFL;
 
     if (pwm_cmp > 10) {
-        pwm_cmp -= 3;
+        pwm_cmp -= 2;
 
         TCA0.SINGLE.CMP0BUFL = pwm_cmp;
         TCA0.SINGLE.CMP0BUFH = 0;
@@ -363,8 +363,8 @@ static uint8_t run_command(enum padmem_slot slot, volatile const uint8_t *cmd,
         uint8_t tx = cmd[i];
 
         if (i > 0) {
-            // Wait for DSR
-            uint8_t timeout = nticks_10ms + 20;
+            /* Wait for DSR */
+            uint8_t timeout = nticks_10ms + 5;
 
             while (nticks_10ms != timeout && ndsr == ndsr_pre) {
                 ;
