@@ -54,15 +54,78 @@ static uint8_t spi_exchange(uint8_t v)
     return spi_wait_bsy();
 }
 
-static int uart_putchar(int c)
+/* Must be a power of two */
+#define TX_FIFO_LEN 0x40
+#define TX_FIFO_IMASK ((TX_FIFO_LEN << 1) - 1)
+
+static volatile uint8_t uart_tx_fifo[TX_FIFO_LEN];
+static volatile uint8_t uart_tx_wi = 0;
+static volatile uint8_t uart_tx_ri = 0;
+
+static bool uart_can_write(void)
 {
-    while (!(USART2.STATUS & USART_DREIF_bm)) {
-        ;
+    return USART2.STATUS & USART_DREIF_bm;
+}
+
+ISR_N(USART2_DRE_vect_num)
+static void uart_tx_irq(void)
+{
+    uint8_t ri = uart_tx_ri;
+    uint8_t wi = uart_tx_wi;
+
+    if (ri != wi && uart_can_write()) {
+        USART2.TXDATAL = uart_tx_fifo[(ri++) & (TX_FIFO_LEN - 1)];
+        uart_tx_ri = ri & TX_FIFO_IMASK;
     }
 
-    USART2.TXDATAL = c;
+    if (ri == wi) {
+        /* FIFO empty, disable IRQ */
+        USART2.CTRLA &= ~USART_DREIE_bm;
+    }
+}
 
-    return c;
+static void uart_putchar(int c)
+{
+    uint8_t s = SREG;
+    uint8_t ri;
+    uint8_t wi;
+
+    if (!(s & CPU_I_bm)) {
+        /* We should not call this from IRQ context*/
+        return;
+    }
+
+    cli();
+
+    ri = uart_tx_ri;
+    wi = uart_tx_wi;
+
+    if (ri == wi && uart_can_write()) {
+        /* FIFO is empty and UART can accept a byte, just use that */
+        USART2.TXDATAL = c;
+        goto done;
+    }
+
+    /* UART is busy, attempt to store in the buffer */
+    while ((wi ^ TX_FIFO_LEN) == ri) {
+        /* Buffer full! Wait for UART to empty */
+        PORTC.OUTTGL |= PIN1_bm;
+        sei();
+        sleep_cpu();
+        cli();
+
+        ri = uart_tx_ri;
+        wi = uart_tx_wi;
+    }
+
+    uart_tx_fifo[(wi++) & (TX_FIFO_LEN - 1)] = c;
+
+    uart_tx_wi = wi & TX_FIFO_IMASK;
+
+    USART2.CTRLA |= USART_DREIE_bm;
+
+done:
+    sei();
 }
 
 static int uart_putchar_stream(char c, FILE *stream)
@@ -73,7 +136,9 @@ static int uart_putchar_stream(char c, FILE *stream)
         uart_putchar('\r');
     }
 
-    return uart_putchar(c);
+    uart_putchar(c);
+
+    return c;
 }
 
 static FILE uart_stream =
@@ -285,7 +350,6 @@ static void portd_irq(void)
     PORTD.INTFLAGS = flags;
 
     if (flags & PORT_INT_0_bm) {
-        PORTC.OUTTGL |= PIN1_bm;
         TCA0.SINGLE.CMP0BUFL = 0xff;
         TCA0.SINGLE.CMP0BUFH = 0;
         ndsr++;
@@ -301,9 +365,6 @@ static bool dsr(void)
 static void init(void)
 {
     cli();
-
-    /* Watchdog setup */
-    /* wdt_enable(WDTO_2S); */
 
     /* Per datasheet:
      *
@@ -340,7 +401,6 @@ static void init(void)
     _PROTECTED_WRITE(CLKCTRL_MCLKCTRLB, CLKCTRL_PEN_bm | CLKCTRL_PDIV_4X_gc);
 
     uart_init();
-    puts("Starting up...");
 
     pwm_init();
 
@@ -356,11 +416,16 @@ static void init(void)
     PORTD.DIR |= PIN1_bm | PIN2_bm;
     PORTD.OUTSET |= PIN1_bm | PIN2_bm;
 
+    set_sleep_mode(SLEEP_MODE_IDLE);
+    sleep_enable();
+
     /* Make sure the peripherals see stable values before we attempt to start a
      * command */
     _delay_ms(200);
 
     sei();
+
+    puts("Starting up...");
 }
 
 static uint8_t command_rx_buf[256];
@@ -420,9 +485,6 @@ done:
 int main(void)
 {
     init();
-
-    set_sleep_mode(SLEEP_MODE_IDLE);
-    sleep_enable();
 
     for (;;) {
         cli();
