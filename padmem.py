@@ -152,11 +152,11 @@ def purple(s):
     return col(95, s)
 
 
-def printbytes(bytes):
+def printbytes(bytes, base_addr=0):
     for c in range(0, len(bytes), 16):
         bb = bytes[c : c + 16]
 
-        buf = f"{c: 4x}: "
+        buf = f"{base_addr + c: 8x}: "
 
         for i, b in enumerate(bb):
             if i != 0:
@@ -165,19 +165,30 @@ def printbytes(bytes):
 
         print(purple(buf))
 
-        buf = f"      "
+        buf = f"          "
         for i, b in enumerate(bb):
             if i != 0:
                 buf += " "
             c = chr(b)
 
             if c in printable:
-                buf += c + " "
+                if c == "\n":
+                    buf += "\\n"
+                elif c == "\r":
+                    buf += "\\r"
+                elif c == "\t":
+                    buf += "\\t"
+                elif c == "\f":
+                    buf += "\\f"
+                elif c == "\v":
+                    buf += "\\v"
+                else:
+                    buf += c + " "
             else:
                 buf += " ."
 
         print(purple(buf))
-    print(purple(f"{len(bytes): 4x}: "))
+    print(purple(f"{base_addr + len(bytes): 8x}: "))
 
 
 def do_list(iface, args):
@@ -261,6 +272,60 @@ def do_exchange(iface, args):
     iface.verbose = v
 
 
+def do_pks_memread(iface, args):
+    addr = args.address
+    mlen = args.length
+    mem = bytearray()
+    slot = Slot(args.slot)
+    read_cmd = bytearray(11 + 0x80)
+
+    read_cmd[0] = 0x81
+    read_cmd[1] = 0x5B  # PocketStation command PKSX -> PSX
+    read_cmd[2] = 0x01  # Function 1: read memory
+
+    if mlen == 0:
+        raise ValueError("Length is 0!")
+
+    if addr + mlen > (2**32):
+        raise ValueError("Addr + Len is out of bounds!")
+
+    while mlen > 0:
+        dlen = min(mlen, 0x80)
+
+        read_cmd[4] = addr & 0xFF
+        read_cmd[5] = (addr >> 8) & 0xFF
+        read_cmd[6] = (addr >> 16) & 0xFF
+        read_cmd[7] = (addr >> 24) & 0xFF
+        read_cmd[8] = dlen
+
+        r = iface.exchange_with_slot(slot, read_cmd[0 : dlen + 11])
+
+        if (
+            len(r) != dlen + 11
+            or r[3] != 0x5  # Argument count
+            or r[9] != dlen
+            or r[dlen + 10] != 0xFF
+        ):
+            print(f"\nInvalid PocketStation response at 0x{addr:x}")
+            printbytes(r)
+            return False
+
+        mem += r[10 : 10 + dlen]
+        print(f"\r{len(mem)} / {args.length}", end="")
+
+        mlen -= dlen
+        addr += dlen
+
+    print()
+
+    if args.output:
+        f = open(args.output, "bw")
+        f.write(mem)
+        f.flush()
+    else:
+        printbytes(mem, base_addr=args.address)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PlayStation Pad/MemoryCard interface")
 
@@ -320,6 +385,35 @@ if __name__ == "__main__":
         help="Bytes to send",
     )
     parser_exchange.set_defaults(cback=do_exchange)
+
+    parser_pks_memread = subparsers.add_parser(
+        "pks-memread", help="Read the PocketStation memory"
+    )
+    parser_pks_memread.register("type", "bint", lambda s: int(s, 0))
+    parser_pks_memread.register("type", "slot", lambda s: Slot(int(s)))
+    parser_pks_memread.add_argument(
+        "-s",
+        "--slot",
+        default=1,
+        type="slot",
+        help="Which slot to dump (default: %(default)s)",
+    )
+    parser_pks_memread.add_argument(
+        "-o",
+        "--output",
+        help="File where the binary data should be stored",
+    )
+    parser_pks_memread.add_argument(
+        "address",
+        type="bint",
+        help="Start address in PocketStation memory",
+    )
+    parser_pks_memread.add_argument(
+        "length",
+        type="bint",
+        help="How many bytes to read",
+    )
+    parser_pks_memread.set_defaults(cback=do_pks_memread)
 
     args = parser.parse_args()
 
