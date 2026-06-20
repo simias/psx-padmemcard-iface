@@ -192,18 +192,19 @@ def printbytes(bytes, base_addr=0):
 
 
 def do_list(iface, args):
-    for s in Slot:
-        r = iface.exchange_with_slot(s, b"\x01\x42\x00\x00\x00")
-        if len(r) == 5 and r[1] == 0x41 and r[2] == 0x5A:
-            print(f"Slot {s.value}: GamePad detected")
-        else:
-            print(f"Slot {s.value}: No GamePad")
+    slot = Slot(args.slot)
 
-        r = iface.exchange_with_slot(s, b"\x81\x52\x00\x00")
-        if len(r) == 4 and r[2] == 0x5A and r[3] == 0x5D:
-            print(f"Slot {s.value}: Memory Card detected")
-        else:
-            print(f"Slot {s.value}: No Memory Card")
+    r = iface.exchange_with_slot(slot, b"\x01\x42\x00\x00\x00")
+    if len(r) == 5 and r[1] == 0x41 and r[2] == 0x5A:
+        print(f"Slot {slot.value}: GamePad detected")
+    else:
+        print(f"Slot {slot.value}: No GamePad")
+
+    r = iface.exchange_with_slot(slot, b"\x81\x52\x00\x00")
+    if len(r) == 4 and r[2] == 0x5A and r[3] == 0x5D:
+        print(f"Slot {slot.value}: Memory Card detected")
+    else:
+        print(f"Slot {slot.value}: No Memory Card")
 
 
 def do_mcdump(iface, args):
@@ -328,6 +329,7 @@ def do_pks_memread(iface, args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PlayStation Pad/MemoryCard interface")
+    parser.register("type", "slot", lambda s: Slot(int(s)))
 
     parser.add_argument(
         "-u",
@@ -341,6 +343,14 @@ if __name__ == "__main__":
         help="Display the raw data being exchanged",
         action="store_true",
     )
+    parser.register("type", "slot", lambda s: Slot(int(s)))
+    parser.add_argument(
+        "-s",
+        "--slot",
+        default=1,
+        type="slot",
+        help="Which slot to use (default: %(default)s)",
+    )
 
     subparsers = parser.add_subparsers(required=True)
 
@@ -349,14 +359,6 @@ if __name__ == "__main__":
 
     parser_mc_dump = subparsers.add_parser(
         "mcdump", help="Dump a Memory Card to a file"
-    )
-    parser_mc_dump.register("type", "slot", lambda s: Slot(int(s)))
-    parser_mc_dump.add_argument(
-        "-s",
-        "--slot",
-        default=1,
-        type="slot",
-        help="Which slot to dump (default: %(default)s)",
     )
     parser_mc_dump.add_argument(
         "-o",
@@ -372,13 +374,6 @@ if __name__ == "__main__":
     parser_exchange.register("type", "bint", lambda s: int(s, 0))
     parser_exchange.register("type", "slot", lambda s: Slot(int(s)))
     parser_exchange.add_argument(
-        "-s",
-        "--slot",
-        default=1,
-        type="slot",
-        help="Which slot to dump (default: %(default)s)",
-    )
-    parser_exchange.add_argument(
         "bytes",
         nargs="+",
         type="bint",
@@ -390,14 +385,6 @@ if __name__ == "__main__":
         "pks-memread", help="Read the PocketStation memory"
     )
     parser_pks_memread.register("type", "bint", lambda s: int(s, 0))
-    parser_pks_memread.register("type", "slot", lambda s: Slot(int(s)))
-    parser_pks_memread.add_argument(
-        "-s",
-        "--slot",
-        default=1,
-        type="slot",
-        help="Which slot to dump (default: %(default)s)",
-    )
     parser_pks_memread.add_argument(
         "-o",
         "--output",
@@ -414,6 +401,10 @@ if __name__ == "__main__":
         help="How many bytes to read",
     )
     parser_pks_memread.set_defaults(cback=do_pks_memread)
+
+    # parser_pks_rtcread = subparsers.add_parser(
+    #     "pks-memread", help="Read the PocketStation memory"
+    # )
 
     args = parser.parse_args()
 
