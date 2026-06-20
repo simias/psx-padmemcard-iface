@@ -327,6 +327,48 @@ def do_pks_memread(iface, args):
         printbytes(mem, base_addr=args.address)
 
 
+def do_pks_rtcread(iface, args):
+    slot = Slot(args.slot)
+    read_cmd = bytearray(14)
+
+    read_cmd[0] = 0x81
+    read_cmd[1] = 0x5B  # PocketStation command PKSX -> PSX
+    read_cmd[2] = 0x00  # Function 0: read RTC
+
+    r = iface.exchange_with_slot(slot, read_cmd)
+
+    if (
+        len(r) != len(read_cmd)
+        or r[3] != 0x0  # Argument count
+        or r[4] != 8
+        or r[13] != 0xFF
+    ):
+        print(f"\nInvalid PocketStation response")
+        printbytes(r)
+        return False
+
+    def from_bcd(b):
+        h = (b >> 4) & 0xF
+        l = b & 0xF
+
+        if h > 9 or l > 9:
+            print(f"\nInvalid BCD value: {b:02x}")
+
+        return h * 10 + l
+
+    mday = from_bcd(r[5])
+    month = from_bcd(r[6])
+    year = from_bcd(r[7]) + from_bcd(r[8]) * 100
+    secs = from_bcd(r[9])
+    mins = from_bcd(r[10])
+    hours = from_bcd(r[11])
+    wday = from_bcd(r[12])
+
+    wday_en = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][wday - 1]
+
+    print(f"{year:04}-{month:02}-{mday:02} {hours:02}:{mins:02}:{secs:02} - {wday_en}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PlayStation Pad/MemoryCard interface")
     parser.register("type", "slot", lambda s: Slot(int(s)))
@@ -402,9 +444,10 @@ if __name__ == "__main__":
     )
     parser_pks_memread.set_defaults(cback=do_pks_memread)
 
-    # parser_pks_rtcread = subparsers.add_parser(
-    #     "pks-memread", help="Read the PocketStation memory"
-    # )
+    parser_pks_rtcread = subparsers.add_parser(
+        "pks-rtcread", help="Read the PocketStation RTC date"
+    )
+    parser_pks_rtcread.set_defaults(cback=do_pks_rtcread)
 
     args = parser.parse_args()
 
