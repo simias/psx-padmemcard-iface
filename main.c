@@ -428,13 +428,16 @@ static void init(void)
     puts("Starting up...");
 }
 
-static uint8_t command_rx_buf[256];
-
 static uint8_t run_command(enum padmem_slot slot, volatile const uint8_t *cmd,
                            uint8_t len)
 {
     uint8_t ndsr_pre = ndsr;
     unsigned i;
+    uint8_t b;
+    uint8_t csum = 'X';
+
+    uart_putchar(0xa6);
+    uart_putchar('X');
 
     /* Select port */
     if (slot == SLOT_1) {
@@ -471,12 +474,23 @@ static uint8_t run_command(enum padmem_slot slot, volatile const uint8_t *cmd,
 
         ndsr_pre = ndsr;
 
-        command_rx_buf[i] = spi_exchange(tx);
+        b = spi_exchange(tx);
+
+        csum += b;
+        uart_putchar(b);
+        if (b == 0xa7) {
+            uart_putchar(b);
+        }
     }
 
 done:
     /* Deselect everything */
     PORTD.OUTSET |= PIN1_bm | PIN2_bm;
+
+    uart_putchar(0xa7);
+    uart_putchar((i + 1) & 0x7f);
+    uart_putchar(csum ^ 0xff);
+
     _delay_us(20);
 
     return i;
@@ -514,7 +528,6 @@ int main(void)
              */
             {
                 uint8_t slot;
-                uint8_t nx;
 
                 if (rx_buf_end < 2) {
                     uart_tx_nack();
@@ -527,8 +540,7 @@ int main(void)
                     uart_tx_nack();
                 }
 
-                nx = run_command(slot, rx_buf + 2, rx_buf_end - 2);
-                uart_tx_frame('X', command_rx_buf, nx);
+                run_command(slot, rx_buf + 2, rx_buf_end - 2);
             }
             break;
         default:

@@ -97,8 +97,10 @@ class Iface:
             expected_csum += b
             res.append(b)
 
-        if b != len(res) & 0x7F:
-            raise Exception(f"Invalid end marker")
+        expected_eod = len(res) & 0x7F
+
+        if b != expected_eod:
+            raise Exception(f"Invalid end marker, expected {expected_eod} got {b}")
 
         expected_csum = (expected_csum & 0xFF) ^ 0xFF
 
