@@ -7,6 +7,7 @@ import pprint
 from string import printable
 from time import sleep
 from enum import Enum, auto
+from datetime import datetime
 
 
 class Slot(Enum):
@@ -369,6 +370,47 @@ def do_pks_rtcread(iface, args):
     print(f"{year:04}-{month:02}-{mday:02} {hours:02}:{mins:02}:{secs:02} - {wday_en}")
 
 
+def do_pks_rtcsync(iface, args):
+    slot = Slot(args.slot)
+    cmd = bytearray(14)
+
+    now = datetime.now()
+
+    def to_bcd(b):
+        if b > 99:
+            print(f"\nInvalid decimal BCD value: {b}")
+
+        h, l = divmod(b, 10)
+
+        h = b // 10
+        l = b % 10
+
+        return (h << 4) | l
+
+    cmd[0] = 0x81
+    cmd[1] = 0x5C  # PocketStation command PSX -> PKSX
+    cmd[2] = 0x00  # Function 0: write RTC
+    cmd[5] = to_bcd(now.day)
+    cmd[6] = to_bcd(now.month)
+    cmd[7] = to_bcd(now.year % 100)
+    cmd[8] = to_bcd(now.year // 100)
+    cmd[9] = to_bcd(now.second)
+    cmd[10] = to_bcd(now.minute)
+    cmd[11] = to_bcd((now.weekday() + 1) % 7)
+
+    r = iface.exchange_with_slot(slot, cmd)
+
+    if (
+        len(r) != len(cmd)
+        or r[3] != 0x0  # Argument count
+        or r[4] != 8
+        or r[13] != 0xFF
+    ):
+        print(f"\nInvalid PocketStation response")
+        printbytes(r)
+        return False
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PlayStation Pad/MemoryCard interface")
     parser.register("type", "slot", lambda s: Slot(int(s)))
@@ -448,6 +490,11 @@ if __name__ == "__main__":
         "pks-rtcread", help="Read the PocketStation RTC date"
     )
     parser_pks_rtcread.set_defaults(cback=do_pks_rtcread)
+
+    parser_pks_rtcsync = subparsers.add_parser(
+        "pks-rtcsync", help="Set PocketStation RTC date from the computer clock"
+    )
+    parser_pks_rtcsync.set_defaults(cback=do_pks_rtcsync)
 
     args = parser.parse_args()
 
