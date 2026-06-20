@@ -246,6 +246,8 @@ def do_mcdump(iface, args):
         f.write(data)
         f.flush()
 
+    print()
+
 
 def do_exchange(iface, args):
     slot = Slot(args.slot)
