@@ -86,12 +86,12 @@ static void uart_tx_irq(void)
 
 static void uart_putchar(int c)
 {
-    uint8_t s = SREG;
     uint8_t ri;
     uint8_t wi;
 
-    if (!(s & CPU_I_bm)) {
-        /* We should not call this from IRQ context*/
+    if (!(SREG & CPU_I_bm)) {
+        /* We should not call this from IRQ context since the handling of the
+         * buffer full condition relies on being able to be interrupted. */
         return;
     }
 
@@ -109,7 +109,6 @@ static void uart_putchar(int c)
     /* UART is busy, attempt to store in the buffer */
     while ((wi ^ TX_FIFO_LEN) == ri) {
         /* Buffer full! Wait for UART to empty */
-        PORTC.OUTTGL |= PIN1_bm;
         sei();
         sleep_cpu();
         cli();
@@ -167,31 +166,40 @@ static void uart_rx_irq(void)
 
     switch (uart_st) {
     case RX_START:
-        if (b == 0xA5) {
+        if (b == 0xa5) {
             rx_buf_end = 0;
             csum = 0;
             nstate = WAIT_FOR_DATA;
         }
         break;
-    case WAIT_FOR_DATA:
 
+    case WAIT_FOR_DATA:
         if (b == 0xa7) {
             nstate = WAIT_FOR_ESCAPE;
         } else {
-            /* Let this wrap around on overflow, it'll just be rejected by the
-             * checksum, probably */
             rx_buf[rx_buf_end++] = b;
             csum += b;
             nstate = WAIT_FOR_DATA;
+
+            if (rx_buf_end == 0) {
+                /* Overflow */
+                nstate = RX_START;
+            }
         }
 
         break;
+
     case WAIT_FOR_ESCAPE:
         if (b == 0xa7) {
             /* 0xa7 0xa7 -> we want an 0xa7 */
             rx_buf[rx_buf_end++] = b;
             csum += b;
             nstate = WAIT_FOR_DATA;
+
+            if (rx_buf_end == 0) {
+                /* Overflow */
+                nstate = RX_START;
+            }
         } else if (b == (rx_buf_end & 0x7f)) {
             /* End of data */
             nstate = WAIT_FOR_CSUM;
@@ -209,6 +217,7 @@ static void uart_rx_irq(void)
             printf("Invalid CSUM! expected %x got %x\n", csum, b);
         }
         break;
+
     case RX_DONE:
         if (rx_buf_end > 0) {
             nstate = RX_DONE;
@@ -272,13 +281,12 @@ static void pwm_init(void)
 {
     /* LED on PC0: use PWM */
     PORTC.DIR |= PIN0_bm;
-    PORTC.DIR |= PIN1_bm;
 
     PORTMUX.TCAROUTEA &= ~PORTMUX_TCA0_gm;
     PORTMUX.TCAROUTEA |= PORTMUX_TCA0_PORTC_gc;
 
     /* Period */
-    TCA0.SINGLE.PER = 0xFF;
+    TCA0.SINGLE.PER = 0xff;
 
     /* Duty cycle */
     TCA0.SINGLE.CMP0 = 0x10;

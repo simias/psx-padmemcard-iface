@@ -249,7 +249,7 @@ def do_mcdump(iface, args):
 
 def do_exchange(iface, args):
     slot = Slot(args.slot)
-    tx = bytearray(args.rest)
+    tx = bytearray(args.bytes)
 
     v = iface.verbose
     iface.verbose = True
@@ -312,7 +312,7 @@ if __name__ == "__main__":
         help="Which slot to dump (default: %(default)s)",
     )
     parser_exchange.add_argument(
-        "rest",
+        "bytes",
         nargs="+",
         type="bint",
         help="Bytes to send",
