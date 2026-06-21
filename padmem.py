@@ -274,11 +274,8 @@ def do_exchange(iface, args):
     iface.verbose = v
 
 
-def do_pks_memread(iface, args):
-    addr = args.address
-    mlen = args.length
+def pks_memread(slot, addr, mlen, progress=False):
     mem = bytearray()
-    slot = Slot(args.slot)
     read_cmd = bytearray(11 + 0x80)
 
     read_cmd[0] = 0x81
@@ -310,15 +307,28 @@ def do_pks_memread(iface, args):
         ):
             print(f"\nInvalid PocketStation response at 0x{addr:x}")
             printbytes(r)
-            return False
+            return None
 
         mem += r[10 : 10 + dlen]
-        print(f"\r{len(mem)} / {args.length}", end="")
+
+        if progress:
+            print(f"\r{len(mem)} / {args.length}", end="")
 
         mlen -= dlen
         addr += dlen
 
-    print()
+    if progress:
+        print()
+
+    return mem
+
+
+def do_pks_memread(iface, args):
+    slot = Slot(args.slot)
+    addr = args.address
+    mlen = args.length
+
+    mem = pks_memread(slot, addr, mlen, progress=True)
 
     if args.output:
         f = open(args.output, "bw")
@@ -326,6 +336,28 @@ def do_pks_memread(iface, args):
         f.flush()
     else:
         printbytes(mem, base_addr=args.address)
+
+
+def do_pks_showdisplay(iface, args):
+    slot = Slot(args.slot)
+
+    lcd_bytes = pks_memread(slot, 0xD000100, 0x80)
+
+    lcd = []
+
+    for i in range(0, 0x80, 4):
+        lcd.append(int.from_bytes(lcd_bytes[i : i + 4], "little"))
+
+    print(" .------------------------------------------------------------------.")
+    for line in lcd:
+        print(" | ", end="")
+        for x in range(0, 32):
+            if (line >> x) & 1:
+                print("@@", end="")
+            else:
+                print("  ", end="")
+        print(" |")
+    print(" '------------------------------------------------------------------'")
 
 
 def do_pks_rtcread(iface, args):
@@ -496,6 +528,11 @@ if __name__ == "__main__":
         "pks-rtcsync", help="Set PocketStation RTC date from the computer clock"
     )
     parser_pks_rtcsync.set_defaults(cback=do_pks_rtcsync)
+
+    parser_pks_showdisplay = subparsers.add_parser(
+        "pks-showdisplay", help="Dump the current contents of the PocketStation LCD"
+    )
+    parser_pks_showdisplay.set_defaults(cback=do_pks_showdisplay)
 
     args = parser.parse_args()
 
