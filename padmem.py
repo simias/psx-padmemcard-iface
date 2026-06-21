@@ -282,6 +282,65 @@ def do_mcdump(iface, args):
     print()
 
 
+def do_mcrestore(iface, args):
+    slot = Slot(args.slot)
+
+    with open(args.file, "rb") as f:
+        dat = f.read(128 * 1024 + 1)
+
+    if len(dat) != 128 * 1024:
+        raise ValueError("MCR file has the wrong size")
+
+    if dat[0] != ord("M") or dat[1] != ord("C"):
+        print("Warning: file doesn't appear to be a Memory Card image")
+
+    write_cmd = bytearray(10 + 128)
+
+    write_cmd[0] = 0x81
+    write_cmd[1] = 0x57
+
+    for page in range(0, 0x400):
+        print(f"\r{page + 1} / {0x400}", end="")
+
+        page_hi = page >> 8
+        page_lo = page & 0xFF
+
+        write_cmd[4] = page_hi
+        write_cmd[5] = page_lo
+
+        pstart = page * 128
+        pdat = dat[pstart : pstart + 128]
+
+        xsum = page_hi ^ page_lo
+        for i, b in enumerate(pdat):
+            write_cmd[6 + i] = b
+            xsum ^= b
+
+        write_cmd[6 + 128] = xsum
+
+        r = iface.exchange_with_slot(slot, write_cmd)
+
+        if (
+            len(r) != len(write_cmd)
+            or r[2] != 0x5A
+            or r[3] != 0x5D
+            or r[135] != 0x5C
+            or r[136] != 0x5D
+            or r[137] != 0x47
+        ):
+            print(f"\nInvalid Memory Card response at page {page}")
+            printbytes(r)
+            return False
+
+        # Memory Cards seem to need a cooldown between writes. I get errors with
+        # 0.003 (although I do manage to write ~38 pages or so) but 0.004 seems
+        # to work. Actually no, it works with the PocketStation but seems to
+        # fail with an official Memory Card (after exactly 512 sectors)
+        sleep(0.01)
+
+    print()
+
+
 def do_exchange(iface, args):
     slot = Slot(args.slot)
     tx = bytearray(args.bytes)
@@ -504,6 +563,15 @@ if __name__ == "__main__":
         required=True,
     )
     parser_mc_dump.set_defaults(cback=do_mcdump)
+
+    parser_mc_restore = subparsers.add_parser(
+        "mcrestore", help="Restore Memory Card contents from a mcr file"
+    )
+    parser_mc_restore.add_argument(
+        "file",
+        help="File containing the raw .mcr image",
+    )
+    parser_mc_restore.set_defaults(cback=do_mcrestore)
 
     parser_exchange = subparsers.add_parser(
         "exchange", help="Exchange raw data with a slot"
