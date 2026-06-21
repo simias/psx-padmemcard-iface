@@ -45,12 +45,32 @@ class Iface:
         csum = 0
 
         frame = bytearray(b"\xa5")
-        for b in bytes:
-            csum += b
-            frame.append(b)
-            if b == 0xA7:
-                # Escape
+
+        i = 0
+        while i < len(bytes):
+            b = bytes[i]
+            i += 1
+
+            if b == 0:
+                j = i
+                while j < len(bytes) and bytes[j] == 0:
+                    j += 1
+
+                nzero = min(j - i + 1, 0xF + 3)
+
+                if nzero >= 3:
+                    frame.append(0xA7)
+                    frame.append(0xB0 + nzero - 3)
+                    i += nzero - 1
+                else:
+                    frame.append(0)
+
+            else:
+                csum += b
                 frame.append(b)
+                if b == 0xA7:
+                    # Escape
+                    frame.append(b)
 
         # End marker
         frame.append(0xA7)

@@ -154,7 +154,7 @@ enum uart_rx_state {
 static volatile enum uart_rx_state uart_st = RX_START;
 
 static volatile uint8_t rx_buf[256];
-static volatile uint8_t rx_buf_end;
+static volatile uint8_t rx_buf_len;
 
 ISR_N(USART2_RXC_vect_num)
 static void uart_rx_irq(void)
@@ -163,11 +163,12 @@ static void uart_rx_irq(void)
     enum uart_rx_state nstate = RX_START;
     /* How many bytes to receive - 1*/
     static uint8_t csum;
+    static uint8_t wi;
 
     switch (uart_st) {
     case RX_START:
         if (b == 0xa5) {
-            rx_buf_end = 0;
+            wi = 0;
             csum = 0;
             nstate = WAIT_FOR_DATA;
         }
@@ -177,11 +178,11 @@ static void uart_rx_irq(void)
         if (b == 0xa7) {
             nstate = WAIT_FOR_ESCAPE;
         } else {
-            rx_buf[rx_buf_end++] = b;
+            rx_buf[wi++] = b;
             csum += b;
             nstate = WAIT_FOR_DATA;
 
-            if (rx_buf_end == 0) {
+            if (wi == 0) {
                 /* Overflow */
                 nstate = RX_START;
             }
@@ -192,15 +193,35 @@ static void uart_rx_irq(void)
     case WAIT_FOR_ESCAPE:
         if (b == 0xa7) {
             /* 0xa7 0xa7 -> we want an 0xa7 */
-            rx_buf[rx_buf_end++] = b;
+            rx_buf[wi++] = b;
             csum += b;
             nstate = WAIT_FOR_DATA;
 
-            if (rx_buf_end == 0) {
+            if (wi == 0) {
                 /* Overflow */
                 nstate = RX_START;
             }
-        } else if (b == (rx_buf_end & 0x7f)) {
+        } else if ((b >> 4) == 0xb) {
+            /* 0-RLE
+             *
+             * We could use a more aggressive encoding allowing for even longer
+             * runs, but eventually the decoding takes too long and we miss the
+             * next byte. Plus the gains become really small.
+             */
+            uint8_t nzero = (b & 0xf) + 3;
+            uint8_t wi_s = wi;
+
+            nstate = WAIT_FOR_DATA;
+
+            while (nzero--) {
+                rx_buf[wi++] = 0;
+            }
+
+            if (wi < wi_s) {
+                /* Overflow */
+                nstate = RX_START;
+            }
+        } else if (b == (wi & 0x7f)) {
             /* End of data */
             nstate = WAIT_FOR_CSUM;
         } else {
@@ -212,6 +233,7 @@ static void uart_rx_irq(void)
 
     case WAIT_FOR_CSUM:
         if ((csum ^ 0xff) == b) {
+            rx_buf_len = wi;
             nstate = RX_DONE;
         } else {
             printf("Invalid CSUM! expected %x got %x\n", csum, b);
@@ -219,7 +241,7 @@ static void uart_rx_irq(void)
         break;
 
     case RX_DONE:
-        if (rx_buf_end > 0) {
+        if (wi > 0) {
             nstate = RX_DONE;
         } else {
             nstate = RX_START;
@@ -537,7 +559,7 @@ int main(void)
             {
                 uint8_t slot;
 
-                if (rx_buf_end < 2) {
+                if (rx_buf_len < 2) {
                     uart_tx_nack();
                 }
 
@@ -548,7 +570,7 @@ int main(void)
                     uart_tx_nack();
                 }
 
-                run_command(slot, rx_buf + 2, rx_buf_end - 2);
+                run_command(slot, rx_buf + 2, rx_buf_len - 2);
             }
             break;
         default:
