@@ -143,6 +143,34 @@ static int uart_putchar_stream(char c, FILE *stream)
 static FILE uart_stream =
     FDEV_SETUP_STREAM(uart_putchar_stream, NULL, _FDEV_SETUP_WRITE);
 
+static void uart_tx_frame(uint8_t cmd, const uint8_t *dat, uint8_t len)
+{
+    uint8_t csum = cmd;
+    uint8_t i;
+
+    uart_putchar(0xa6);
+    uart_putchar(cmd);
+
+    for (i = 0; i < len; i++) {
+        uint8_t b = dat[i];
+        csum += b;
+        uart_putchar(b);
+        if (b == 0xa7) {
+            /* Escape */
+            uart_putchar(b);
+        }
+    }
+
+    uart_putchar(0xa7);
+    uart_putchar((len + 1) & 0x7f);
+    uart_putchar(csum ^ 0xff);
+}
+
+static void uart_tx_nack(void)
+{
+    uart_tx_frame('!', NULL, 0);
+}
+
 enum uart_rx_state {
     RX_START,
     WAIT_FOR_DATA,
@@ -152,7 +180,6 @@ enum uart_rx_state {
 };
 
 static volatile enum uart_rx_state uart_st = RX_START;
-
 static volatile uint8_t rx_buf[256];
 static volatile uint8_t rx_buf_len;
 
@@ -226,6 +253,7 @@ static void uart_rx_irq(void)
             nstate = WAIT_FOR_CSUM;
         } else {
             /* Spurious/corrupted data */
+            uart_tx_nack();
             nstate = RX_START;
         }
 
@@ -236,7 +264,7 @@ static void uart_rx_irq(void)
             rx_buf_len = wi;
             nstate = RX_DONE;
         } else {
-            printf("Invalid CSUM! expected %x got %x\n", csum, b);
+            uart_tx_nack();
         }
         break;
 
@@ -254,34 +282,6 @@ static void uart_rx_irq(void)
     }
 
     uart_st = nstate;
-}
-
-static void uart_tx_frame(uint8_t cmd, const uint8_t *dat, uint8_t len)
-{
-    uint8_t csum = cmd;
-    uint8_t i;
-
-    uart_putchar(0xa6);
-    uart_putchar(cmd);
-
-    for (i = 0; i < len; i++) {
-        uint8_t b = dat[i];
-        csum += b;
-        uart_putchar(b);
-        if (b == 0xa7) {
-            /* Escape */
-            uart_putchar(b);
-        }
-    }
-
-    uart_putchar(0xa7);
-    uart_putchar((len + 1) & 0x7f);
-    uart_putchar(csum ^ 0xff);
-}
-
-static void uart_tx_nack(void)
-{
-    uart_tx_frame('!', NULL, 0);
 }
 
 static void uart_init(void)
