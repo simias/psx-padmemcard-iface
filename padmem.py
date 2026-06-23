@@ -355,6 +355,7 @@ def do_exchange(iface, args):
 
 
 def pks_memread(slot, addr, mlen, progress=False):
+    full_len = mlen
     mem = bytearray()
     read_cmd = bytearray(11 + 0x80)
 
@@ -392,7 +393,7 @@ def pks_memread(slot, addr, mlen, progress=False):
         mem += r[10 : 10 + dlen]
 
         if progress:
-            print(f"\r{len(mem)} / {args.length}", end="")
+            print(f"\r{len(mem)} / {full_len}", end="")
 
         mlen -= dlen
         addr += dlen
@@ -401,6 +402,58 @@ def pks_memread(slot, addr, mlen, progress=False):
         print()
 
     return mem
+
+
+def pks_memwrite(slot, addr, data, progress=False):
+    write_cmd = bytearray(11 + 0x80)
+
+    write_cmd[0] = 0x81
+    write_cmd[1] = 0x5C  # PocketStation command PSX -> PKSX
+    write_cmd[2] = 0x01  # Function 1: write memory
+
+    mlen = len(data)
+
+    if mlen == 0:
+        raise ValueError("Length is 0!")
+
+    if addr + mlen > (2**32):
+        raise ValueError("Addr + Len is out of bounds!")
+
+    di = 0
+
+    while mlen > 0:
+        dlen = min(mlen, 0x80)
+
+        write_cmd[4] = addr & 0xFF
+        write_cmd[5] = (addr >> 8) & 0xFF
+        write_cmd[6] = (addr >> 16) & 0xFF
+        write_cmd[7] = (addr >> 24) & 0xFF
+        write_cmd[8] = dlen
+
+        for i in range(0, dlen):
+            write_cmd[10 + i] = data[di]
+            di += 1
+
+        r = iface.exchange_with_slot(slot, write_cmd[0 : dlen + 11])
+
+        if (
+            len(r) != dlen + 11
+            or r[3] != 0x5  # Argument count
+            or r[9] != dlen
+            or r[dlen + 10] != 0xFF
+        ):
+            print(f"\nInvalid PocketStation response at 0x{addr:x}")
+            printbytes(r)
+            return None
+
+        if progress:
+            print(f"\r{di} / {len(data)}", end="")
+
+        mlen -= dlen
+        addr += dlen
+
+    if progress:
+        print()
 
 
 def do_pks_memread(iface, args):
@@ -416,6 +469,28 @@ def do_pks_memread(iface, args):
         f.flush()
     else:
         printbytes(mem, base_addr=args.address)
+
+
+def do_pks_memwrite(iface, args):
+    slot = Slot(args.slot)
+    addr = args.address
+
+    if args.input:
+        if args.bytes:
+            raise ValueError("Can't both provide bytes and a file!")
+
+        with open(args.input, "rb") as f:
+            dat = f.read(128 * 1024 + 1)
+    else:
+        dat = args.bytes
+
+    if not dat:
+        raise ValueError("Nothing to write!")
+
+    if len(dat) > 128 * 1024:
+        raise ValueError("Data is too large!")
+
+    pks_memwrite(slot, addr, dat, progress=True)
 
 
 def do_pks_showdisplay(iface, args):
@@ -611,6 +686,28 @@ if __name__ == "__main__":
         help="How many bytes to read",
     )
     parser_pks_memread.set_defaults(cback=do_pks_memread)
+
+    parser_pks_memwrite = subparsers.add_parser(
+        "pks-memwrite", help="Read the PocketStation memory"
+    )
+    parser_pks_memwrite.register("type", "bint", lambda s: int(s, 0))
+    parser_pks_memwrite.add_argument(
+        "-i",
+        "--input",
+        help="File containing the binary data to be sent",
+    )
+    parser_pks_memwrite.add_argument(
+        "address",
+        type="bint",
+        help="Start address in PocketStation memory",
+    )
+    parser_pks_memwrite.add_argument(
+        "bytes",
+        nargs="*",
+        type="bint",
+        help="Bytes to send",
+    )
+    parser_pks_memwrite.set_defaults(cback=do_pks_memwrite)
 
     parser_pks_rtcread = subparsers.add_parser(
         "pks-rtcread", help="Read the PocketStation RTC date"

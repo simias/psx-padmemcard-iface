@@ -110,7 +110,7 @@ static void uart_putchar(int c)
             goto done;
         }
 
-        /*Wait for UART to empty */
+        /* Wait for UART to empty */
         sei();
         sleep_cpu();
         cli();
