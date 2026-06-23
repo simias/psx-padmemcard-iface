@@ -52,6 +52,7 @@ class Iface:
             i += 1
 
             if b == 0:
+                # We have an optimized RLE for long runs of 0
                 j = i
                 while j < len(bytes) and bytes[j] == 0:
                     j += 1
@@ -421,6 +422,10 @@ def do_pks_showdisplay(iface, args):
     slot = Slot(args.slot)
 
     lcd_bytes = pks_memread(slot, 0xD000100, 0x80)
+
+    if not lcd_bytes:
+        print("Couldn't read LCD memory")
+        return False
 
     lcd = []
 

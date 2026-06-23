@@ -86,14 +86,9 @@ static void uart_tx_irq(void)
 
 static void uart_putchar(int c)
 {
+    uint8_t sr = SREG;
     uint8_t ri;
     uint8_t wi;
-
-    if (!(SREG & CPU_I_bm)) {
-        /* We should not call this from IRQ context since the handling of the
-         * buffer full condition relies on being able to be interrupted. */
-        return;
-    }
 
     cli();
 
@@ -108,7 +103,14 @@ static void uart_putchar(int c)
 
     /* UART is busy, attempt to store in the buffer */
     while ((wi ^ TX_FIFO_LEN) == ri) {
-        /* Buffer full! Wait for UART to empty */
+        /* Buffer full! */
+        if (!(sr & CPU_I_bm)) {
+            /* Interrupts were disabled when we were called, we can't sleep, so
+             * we give up. */
+            goto done;
+        }
+
+        /*Wait for UART to empty */
         sei();
         sleep_cpu();
         cli();
@@ -124,7 +126,7 @@ static void uart_putchar(int c)
     USART2.CTRLA |= USART_DREIE_bm;
 
 done:
-    sei();
+    SREG = sr;
 }
 
 static int uart_putchar_stream(char c, FILE *stream)
