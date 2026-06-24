@@ -588,7 +588,7 @@ def do_pks_rtcsync(iface, args):
     cmd[9] = to_bcd(now.second)
     cmd[10] = to_bcd(now.minute)
     cmd[11] = to_bcd(now.hour)
-    cmd[12] = to_bcd((now.weekday() + 1) % 7)
+    cmd[12] = to_bcd(1 + ((now.weekday() + 1) % 7))
 
     r = iface.exchange_with_slot(slot, cmd)
 
