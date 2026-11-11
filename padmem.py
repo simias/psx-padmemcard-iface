@@ -157,6 +157,23 @@ class Iface:
 
         return rx
 
+    def raw_command(self, cmd_byte, bytes=b""):
+        cmd = bytearray(cmd_byte)
+        cmd += bytes
+
+        if self.verbose:
+            print(red(f"CMD {cmd_byte} TX:"))
+            printbytes(bytes)
+
+        self.send_frame(cmd)
+
+        rx = iface.receive_frame(cmd_byte)
+
+        if self.verbose:
+            print(green(f"CMD {cmd_byte} RX:"))
+            printbytes(rx)
+
+        return rx
 
 def col(col, s):
     return f"\033[{col}m{s}\033[00m"
@@ -602,6 +619,8 @@ def do_pks_rtcsync(iface, args):
         printbytes(r)
         return False
 
+def do_ps1_reset(iface, args):
+    iface.raw_command(b'R')
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PlayStation Pad/MemoryCard interface")
@@ -723,6 +742,11 @@ if __name__ == "__main__":
         "pks-showdisplay", help="Dump the current contents of the PocketStation LCD"
     )
     parser_pks_showdisplay.set_defaults(cback=do_pks_showdisplay)
+
+    parser_ps1_reset = subparsers.add_parser(
+        "ps1-reset", help="[pad] Reset the PS1"
+    )
+    parser_ps1_reset.set_defaults(cback=do_ps1_reset)
 
     args = parser.parse_args()
 
