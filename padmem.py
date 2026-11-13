@@ -4,6 +4,9 @@ import argparse
 import serial
 import sys
 import pprint
+import evdev
+from evdev import ecodes, InputDevice
+
 from string import printable
 from time import sleep
 from enum import Enum, auto, IntEnum
@@ -32,6 +35,27 @@ class Button(IntEnum):
     Circle = 13
     Cross = 14
     Square = 15
+
+
+# evdev mapping
+EVDEV_BUTTON_MAP = {
+    ecodes.BTN_SELECT: Button.Select,
+    ecodes.BTN_THUMBL: Button.L3,
+    ecodes.BTN_THUMBR: Button.R3,
+    ecodes.BTN_START: Button.Start,
+    ecodes.BTN_DPAD_UP: Button.Up,
+    ecodes.BTN_DPAD_RIGHT: Button.Right,
+    ecodes.BTN_DPAD_DOWN: Button.Down,
+    ecodes.BTN_DPAD_LEFT: Button.Left,
+    ecodes.BTN_TL2: Button.L2,
+    ecodes.BTN_TR2: Button.R2,
+    ecodes.BTN_TL: Button.L1,
+    ecodes.BTN_TR: Button.R1,
+    ecodes.BTN_WEST: Button.Square,
+    ecodes.BTN_NORTH: Button.Circle,
+    ecodes.BTN_SOUTH: Button.Cross,
+    ecodes.BTN_EAST: Button.Circle,
+}
 
 
 class Iface:
@@ -645,8 +669,6 @@ def do_ps1_reset(iface, args):
 
 
 def do_pad_press(iface, args):
-    print(args)
-
     buttons = 0
 
     if args.button:
@@ -667,6 +689,81 @@ def do_pad_press(iface, args):
         cmd[0] = 0xFF
         cmd[1] = 0xFF
         iface.raw_command(b"P", cmd)
+
+
+def do_pad_sync(iface, args):
+    devs = [(p, InputDevice(p)) for p in evdev.list_devices()]
+
+    if iface.verbose:
+        for p in evdev.list_devices():
+            print(f"{p}: {InputDevice(p).name}")
+
+    d = args.device
+
+    if not d:
+        d = evdev.list_devices()[0]
+
+    d = evdev.InputDevice(d)
+
+    print(f"Synchronizing {d}")
+
+    last_buttons = -1
+    buttons = 0xFFFF
+
+    def press(b, pressed):
+        nonlocal buttons
+        m = 1 << b
+
+        if pressed:
+            buttons &= m ^ 0xFFFF
+        else:
+            buttons |= m
+
+    l2_info = d.absinfo(ecodes.ABS_Z)
+    l2_threshold = l2_info.min + (l2_info.max - l2_info.min) // 4
+
+    r2_info = d.absinfo(ecodes.ABS_RZ)
+    r2_threshold = r2_info.min + (r2_info.max - r2_info.min) // 4
+
+    for event in d.read_loop():
+        if event.type == ecodes.EV_KEY:
+            k = evdev.categorize(event)
+            b = EVDEV_BUTTON_MAP.get(k.scancode)
+
+            if b:
+                press(b, k.keystate == k.key_down)
+
+        elif event.type == ecodes.EV_ABS:
+            if event.code == ecodes.ABS_HAT0X:
+                press(Button.Left, False)
+                press(Button.Right, False)
+
+                if event.value > 0:
+                    press(Button.Right, True)
+                elif event.value < 0:
+                    press(Button.Left, True)
+            elif event.code == ecodes.ABS_HAT0Y:
+                press(Button.Up, False)
+                press(Button.Down, False)
+
+                if event.value > 0:
+                    press(Button.Down, True)
+                elif event.value < 0:
+                    press(Button.Up, True)
+
+            elif event.code == ecodes.ABS_Z:
+                press(Button.L2, event.value > l2_threshold)
+
+            elif event.code == ecodes.ABS_RZ:
+                press(Button.R2, event.value > r2_threshold)
+
+        if last_buttons != buttons:
+            cmd = bytearray(2)
+            cmd[0] = buttons & 0xFF
+            cmd[1] = buttons >> 8
+
+            iface.raw_command(b"P", cmd)
+            last_buttons = buttons
 
 
 if __name__ == "__main__":
@@ -793,7 +890,9 @@ if __name__ == "__main__":
     parser_ps1_reset = subparsers.add_parser("ps1-reset", help="[pad] Reset the PS1")
     parser_ps1_reset.set_defaults(cback=do_ps1_reset)
 
-    parser_pad_press = subparsers.add_parser("pad-press", help="[pad] Reset the PS1")
+    parser_pad_press = subparsers.add_parser(
+        "pad-press", help="[pad] Simulate a button press"
+    )
     parser_pad_press.add_argument(
         "-b",
         "--button",
@@ -809,6 +908,16 @@ if __name__ == "__main__":
         help="How long to maintain the press (ms, 0 for infinite)",
     )
     parser_pad_press.set_defaults(cback=do_pad_press)
+
+    parser_pad_sync = subparsers.add_parser(
+        "pad-sync", help="[pad] synchronize a gamepad with the console"
+    )
+    parser_pad_sync.add_argument(
+        "-d",
+        "--device",
+        help="Path or index to the device to poll",
+    )
+    parser_pad_sync.set_defaults(cback=do_pad_sync)
 
     args = parser.parse_args()
 
