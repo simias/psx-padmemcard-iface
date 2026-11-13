@@ -445,8 +445,8 @@ static void init(void)
     PORTD.PIN0CTRL = PORT_ISC_FALLING_gc;
 
     /* /SEL1: PD1, /SEL2: PD2 */
-    PORTD.DIR |= PIN1_bm | PIN2_bm;
-    PORTD.OUTSET |= PIN1_bm | PIN2_bm;
+    PORTD.DIRSET = PIN1_bm | PIN2_bm;
+    PORTD.OUTSET = PIN1_bm | PIN2_bm;
 
     set_sleep_mode(SLEEP_MODE_IDLE);
     sleep_enable();

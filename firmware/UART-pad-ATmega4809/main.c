@@ -18,14 +18,19 @@ enum padmem_slot {
 
 static void spi_init(void)
 {
-    /* Set MISO pin direction to output */
-    PORTA.DIR |= PIN5_bm;
-
     SPI0.CTRLB = SPI_MODE_3_gc | SPI_BUFEN_bm | SPI_BUFWR_bm;
 
+    /* Enable SS IRQ (to reset the logic) and RX IRQ */
+    SPI0.INTCTRL = SPI_RXCIE_bm;
+
     /* LSB first, CLK_PER / 16 */
-    /* SPI0.CTRLA = SPI_DORD_bm | SPI_PRESC_DIV16_gc; */
     SPI0.CTRLA = 0;
+
+    /* MISO pin activated in the SPI IRQ handler */
+    PORTA.DIRCLR = PIN5_bm;
+
+    /* Enable IRQ on /SS posedge to reset the state machine */
+    PORTA.PIN7CTRL = PORT_ISC_RISING_gc;
 }
 
 /* Must be a power of two */
@@ -317,7 +322,7 @@ static void rtc_irq(void)
 
     pwm_cmp = TCA0.SINGLE.CMP0BUFL;
 
-    if (pwm_cmp > 10) {
+    if (pwm_cmp > 5) {
         pwm_cmp -= 2;
 
         TCA0.SINGLE.CMP0BUFL = pwm_cmp;
@@ -345,20 +350,78 @@ static void rtc_init(void)
     rtc_waitbsy();
 }
 
-static volatile uint8_t ndsr = 0;
+static volatile uint8_t spi_rx_seq = 0;
 
-ISR_N(PORTD_PORT_vect_num)
-static void portd_irq(void)
+ISR_N(PORTA_PORT_vect_num)
+static void porta_irq(void)
 {
-    uint8_t flags = PORTD.INTFLAGS;
+    uint8_t flags = PORTA.INTFLAGS;
 
     /* ACK */
-    PORTD.INTFLAGS = flags;
+    PORTA.INTFLAGS = flags;
 
-    if (flags & PORT_INT_0_bm) {
-        TCA0.SINGLE.CMP0BUFL = 0xff;
+    if (flags & PORT_INT_7_bm) {
+        /* /SS rising edge (deselect). Make sure we don't drive anything on MISO
+         * until we know we're being talked to. */
+        PORTA.DIRCLR = PIN5_bm;
+
+        /* Reset SPI */
+        SPI0.CTRLA = 0;
+        _delay_us(1);
+        SPI0.CTRLA = SPI_DORD_bm | SPI_PRESC_DIV16_gc | SPI_ENABLE_bm;
+
+
+        spi_rx_seq = 0;
+
+        /* We have two words in the TX buffer, so we need to prepare the first
+         * two responses. Then in spi0_irq we are offet by one response every
+         * time. */
+        SPI0.DATA = 0xff;
+        SPI0.DATA = 0x41;
+    }
+}
+
+ISR_N(SPI0_INT_vect_num)
+static void spi0_irq(void)
+{
+    uint8_t rx = SPI0.DATA;
+    bool dsr = false;
+
+    switch (spi_rx_seq) {
+    case 0:
+        dsr = (rx == 0x01);
+        SPI0.DATA = 0x5a;
+        break;
+    case 1:
+        dsr = (rx == 0x42);
+        /* Buttons 1 */
+        SPI0.DATA = 0xff;
+        break;
+    case 2:
+        dsr = true;
+        /* Buttons 2 */
+        SPI0.DATA = ~(1 << 5);
+        break;
+    case 3:
+        dsr = true;
+    }
+
+    if (dsr) {
+        /* PAD interaction: activate MISO */
+        PORTA.DIRSET = PIN5_bm;
+        spi_rx_seq += 1;
+
+        TCA0.SINGLE.CMP0BUFL = 0x15;
         TCA0.SINGLE.CMP0BUFH = 0;
-        ndsr++;
+
+        /* Simulate the delay of a real controller */
+        _delay_us(8);
+        PORTD.DIRSET = PIN0_bm;
+        _delay_us(4);
+        PORTD.DIRCLR = PIN0_bm;
+    } else {
+        /* Don't deactivate anything here or we'll lose the last byte */
+        spi_rx_seq = 0xff;
     }
 }
 
@@ -411,6 +474,11 @@ static void init(void)
     /* PS1 Reset: pull to zero to trigger reset, hi-Z the rest of the time */
     PORTC.DIRCLR = PIN1_bm;
     PORTC.OUTCLR = PIN1_bm;
+
+    /* /DSR signal to tell the console that we have data to send: pull to 0 for
+     * > 2us to signal, otherwise hi-z */
+    PORTD.DIRCLR = PIN0_bm;
+    PORTD.OUTCLR = PIN0_bm;
 
     set_sleep_mode(SLEEP_MODE_IDLE);
     sleep_enable();
