@@ -11,11 +11,6 @@
 #define BAUD_RATE 115200
 #define USART_BAUD_RATE(_br) ((F_CPU * 4 + (_br) / 2) / (_br))
 
-enum padmem_slot {
-    SLOT_1 = 1,
-    SLOT_2 = 2,
-};
-
 static void spi_init(void)
 {
     SPI0.CTRLB = SPI_MODE_3_gc | SPI_BUFEN_bm | SPI_BUFWR_bm;
@@ -361,17 +356,16 @@ static void porta_irq(void)
     PORTA.INTFLAGS = flags;
 
     if (flags & PORT_INT_7_bm) {
+        /* Reset SPI */
+        SPI0.CTRLA = 0;
+
         /* /SS rising edge (deselect). Make sure we don't drive anything on MISO
          * until we know we're being talked to. */
         PORTA.DIRCLR = PIN5_bm;
-
-        /* Reset SPI */
-        SPI0.CTRLA = 0;
-        _delay_us(1);
-        SPI0.CTRLA = SPI_DORD_bm | SPI_PRESC_DIV16_gc | SPI_ENABLE_bm;
-
-
         spi_rx_seq = 0;
+
+        /* Re-init SPI */
+        SPI0.CTRLA = SPI_DORD_bm | SPI_PRESC_DIV16_gc | SPI_ENABLE_bm;
 
         /* We have two words in the TX buffer, so we need to prepare the first
          * two responses. Then in spi0_irq we are offet by one response every
@@ -380,6 +374,8 @@ static void porta_irq(void)
         SPI0.DATA = 0x41;
     }
 }
+
+static volatile uint8_t buttons[2] = { 0xff, 0xff };
 
 ISR_N(SPI0_INT_vect_num)
 static void spi0_irq(void)
@@ -394,13 +390,11 @@ static void spi0_irq(void)
         break;
     case 1:
         dsr = (rx == 0x42);
-        /* Buttons 1 */
-        SPI0.DATA = 0xff;
+        SPI0.DATA = buttons[0];
         break;
     case 2:
         dsr = true;
-        /* Buttons 2 */
-        SPI0.DATA = ~(1 << 5);
+        SPI0.DATA = buttons[1];
         break;
     case 3:
         dsr = true;
@@ -513,7 +507,7 @@ int main(void)
         case '?':
             /* Query interface version */
             {
-                uint8_t version[] = { 1, 0, 0 };
+                uint8_t version[] = { 1, 0, 'P' };
 
                 uart_tx_frame('?', version, ARRAY_SIZE(version));
             }
@@ -526,6 +520,18 @@ int main(void)
                 PORTC.DIRCLR = PIN1_bm;
 
                 uart_tx_frame('R', NULL, 0);
+            }
+            break;
+        case 'P':
+            /* Simulate a buttor press */
+            {
+                if (rx_buf_len != 3) {
+                    uart_tx_nack();
+                    break;
+                }
+                buttons[0] = rx_buf[1];
+                buttons[1] = rx_buf[2];
+                uart_tx_frame('P', NULL, 0);
             }
             break;
         default:

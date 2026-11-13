@@ -6,13 +6,32 @@ import sys
 import pprint
 from string import printable
 from time import sleep
-from enum import Enum, auto
+from enum import Enum, auto, IntEnum
 from datetime import datetime
 
 
 class Slot(Enum):
     SLOT_1 = 1
     SLOT_2 = 2
+
+
+class Button(IntEnum):
+    Select = 0
+    L3 = 1
+    R3 = 2
+    Start = 3
+    Up = 4
+    Right = 5
+    Down = 6
+    Left = 7
+    L2 = 8
+    R2 = 9
+    L1 = 10
+    R1 = 11
+    Triangle = 12
+    Circle = 13
+    Cross = 14
+    Square = 15
 
 
 class Iface:
@@ -174,6 +193,7 @@ class Iface:
             printbytes(rx)
 
         return rx
+
 
 def col(col, s):
     return f"\033[{col}m{s}\033[00m"
@@ -619,8 +639,35 @@ def do_pks_rtcsync(iface, args):
         printbytes(r)
         return False
 
+
 def do_ps1_reset(iface, args):
-    iface.raw_command(b'R')
+    iface.raw_command(b"R")
+
+
+def do_pad_press(iface, args):
+    print(args)
+
+    buttons = 0
+
+    if args.button:
+        [buttons := buttons | (1 << b) for b in args.button]
+
+    buttons ^= 0xFFFF
+
+    cmd = bytearray(2)
+    cmd[0] = buttons & 0xFF
+    cmd[1] = buttons >> 8
+
+    iface.raw_command(b"P", cmd)
+
+    if args.duration:
+        sleep(args.duration / 1000)
+
+        # Release everything
+        cmd[0] = 0xFF
+        cmd[1] = 0xFF
+        iface.raw_command(b"P", cmd)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PlayStation Pad/MemoryCard interface")
@@ -743,10 +790,25 @@ if __name__ == "__main__":
     )
     parser_pks_showdisplay.set_defaults(cback=do_pks_showdisplay)
 
-    parser_ps1_reset = subparsers.add_parser(
-        "ps1-reset", help="[pad] Reset the PS1"
-    )
+    parser_ps1_reset = subparsers.add_parser("ps1-reset", help="[pad] Reset the PS1")
     parser_ps1_reset.set_defaults(cback=do_ps1_reset)
+
+    parser_pad_press = subparsers.add_parser("pad-press", help="[pad] Reset the PS1")
+    parser_pad_press.add_argument(
+        "-b",
+        "--button",
+        action="append",
+        type=Button.__getitem__,
+        help="Button to send",
+    )
+    parser_pad_press.add_argument(
+        "-d",
+        "--duration",
+        type=int,
+        default=0,
+        help="How long to maintain the press (ms, 0 for infinite)",
+    )
+    parser_pad_press.set_defaults(cback=do_pad_press)
 
     args = parser.parse_args()
 

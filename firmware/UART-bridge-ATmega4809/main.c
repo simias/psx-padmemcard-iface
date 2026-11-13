@@ -549,7 +549,7 @@ int main(void)
         case '?':
             /* Query interface version */
             {
-                uint8_t version[] = { 1, 0, 0 };
+                uint8_t version[] = { 1, 0, 'B' };
 
                 uart_tx_frame('?', version, ARRAY_SIZE(version));
             }
@@ -563,6 +563,7 @@ int main(void)
 
                 if (rx_buf_len < 2) {
                     uart_tx_nack();
+                    break;
                 }
 
                 slot = rx_buf[1];
@@ -570,6 +571,7 @@ int main(void)
                 if (slot != SLOT_1 && slot != SLOT_2) {
                     printf("Bad slot %d\n", slot);
                     uart_tx_nack();
+                    break;
                 }
 
                 run_command(slot, rx_buf + 2, rx_buf_len - 2);
