@@ -765,6 +765,21 @@ def do_pad_sync(iface, args):
             iface.raw_command(b"P", cmd)
             last_buttons = buttons
 
+def do_probe(iface, args):
+    iface.send_frame(b"?")
+    f = iface.receive_frame(b"?")
+
+    id = f[2]
+
+    if ord('A') <= id <= ord('Z'):
+        id = chr(id)
+
+    print(f"Identified board v{f[0]}.{f[1]}-{id}")
+
+    if id == 'P':
+        print("PS1 pad/reset emulation board")
+    elif id == 'B':
+        print("PS1 pad/memcard interface board")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PlayStation Pad/MemoryCard interface")
@@ -918,6 +933,9 @@ if __name__ == "__main__":
         help="Path or index to the device to poll",
     )
     parser_pad_sync.set_defaults(cback=do_pad_sync)
+
+    parser_probe = subparsers.add_parser("probe", help="Identify the interface board")
+    parser_probe.set_defaults(cback=do_probe)
 
     args = parser.parse_args()
 
